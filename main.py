@@ -7,20 +7,18 @@ import matplotlib.pyplot as plt
 from scipy.signal import butter, filtfilt, find_peaks
 from scipy.fftpack import fft
 import io
-import json  # Make sure this is at the top
+import json
 
 app = FastAPI()
 
-# ✅ CORS middleware for development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace with frontend domain in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Bandpass filter for ECG signal
 def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
     nyquist = 0.5 * fs
     low = lowcut / nyquist
@@ -28,7 +26,6 @@ def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
     b, a = butter(order, [low, high], btype='band')
     return filtfilt(b, a, data)
 
-# ✅ HRV metrics calculation
 def calculate_hrv_metrics(rr_intervals):
     rr = np.array(rr_intervals)
     rmssd = np.sqrt(np.mean(np.diff(rr) ** 2)) if len(rr) > 1 else None
@@ -50,17 +47,13 @@ def calculate_hrv_metrics(rr_intervals):
         "SD1": sd1,
         "LF Power": lf_power,
         "HF Power": hf_power,
-        "DFA-α1": dfa_alpha1
+        "DFA_alpha1": dfa_alpha1  # ✅ Rename to avoid Unicode issue
     }
 
-# ✅ ECG signal analysis and trimming
 def analyze_ecg(file_bytes, start_index: int = 0):
-    try:
-        df = pd.read_csv(io.BytesIO(file_bytes), delimiter=";", decimal=",", skiprows=[1])
-        df.columns = ["Time (s)", "Voltage (mV)"]
-        df = df.astype(float)
-    except Exception:
-        raise ValueError("Invalid CSV format. Ensure it uses ';' as delimiter and has numeric time and voltage.")
+    df = pd.read_csv(io.BytesIO(file_bytes), delimiter=";", decimal=",", skiprows=[1])
+    df.columns = ["Time (s)", "Voltage (mV)"]
+    df = df.astype(float)
 
     time = df["Time (s)"].values
     voltage = df["Voltage (mV)"].values * 1000
@@ -84,7 +77,6 @@ def analyze_ecg(file_bytes, start_index: int = 0):
     if start_index >= len(true_peaks):
         raise ValueError(f"Start index {start_index} is out of range. Total peaks: {len(true_peaks)}")
 
-    # ✅ Trim from selected peak
     start_time = time[true_peaks[start_index]]
     mask = time >= start_time
     trimmed_time = time[mask] - start_time
@@ -105,7 +97,6 @@ def analyze_ecg(file_bytes, start_index: int = 0):
 
     hrv = calculate_hrv_metrics(rr_intervals_trimmed)
 
-    # ✅ Plot ECG and encode image to buffer
     buf = io.BytesIO()
     plt.figure(figsize=(12, 5))
     plt.plot(trimmed_time, trimmed_voltage, color='blue', label="Trimmed ECG")
@@ -123,24 +114,22 @@ def analyze_ecg(file_bytes, start_index: int = 0):
     return buf, {
         "hrvMetrics": hrv,
         "rrTable": [
-            {
-                "timestamp": true_peak_times_trimmed[i],
-                "rr": None if i == 0 else rr_intervals_trimmed[i - 1]
-            } for i in range(len(true_peak_times_trimmed))
+            {"timestamp": true_peak_times_trimmed[i], "rr": None if i == 0 else rr_intervals_trimmed[i - 1]}
+            for i in range(len(true_peak_times_trimmed))
         ]
     }
 
-# ✅ API endpoint
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:
         content = await file.read()
         plot_buf, analysis = analyze_ecg(content, start_index)
+
         return StreamingResponse(
             plot_buf,
             media_type="image/png",
             headers={
-                "X-Metrics": JSONResponse(content=analysis).body.decode("utf-8")
+                "X-Metrics": json.dumps(analysis)
             }
         )
     except Exception as e:

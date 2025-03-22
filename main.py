@@ -10,14 +10,16 @@ import io
 
 app = FastAPI()
 
+# ✅ CORS middleware for development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # You can change to your frontend URL later
+    allow_origins=["*"],  # Replace with frontend domain in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ✅ Bandpass filter for ECG signal
 def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
     nyquist = 0.5 * fs
     low = lowcut / nyquist
@@ -25,17 +27,20 @@ def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
     b, a = butter(order, [low, high], btype='band')
     return filtfilt(b, a, data)
 
+# ✅ HRV metrics calculation
 def calculate_hrv_metrics(rr_intervals):
     rr = np.array(rr_intervals)
     rmssd = np.sqrt(np.mean(np.diff(rr) ** 2)) if len(rr) > 1 else None
     pnn50 = np.sum(np.abs(np.diff(rr)) > 0.05) / len(rr) * 100 if len(rr) > 1 else None
     sd1 = np.std(rr) / np.sqrt(2) if len(rr) > 1 else None
+
     lf_power = hf_power = None
     if len(rr) > 1:
         rr_fft = np.abs(fft(rr - np.mean(rr)))[:len(rr)//2]
         freqs = np.fft.fftfreq(len(rr), d=np.mean(rr))[:len(rr)//2]
         lf_power = np.sum(rr_fft[(freqs >= 0.04) & (freqs < 0.15)])
         hf_power = np.sum(rr_fft[(freqs >= 0.15) & (freqs < 0.4)])
+
     dfa_alpha1 = np.std(np.log(rr)) if len(rr) > 1 else None
 
     return {
@@ -47,10 +52,14 @@ def calculate_hrv_metrics(rr_intervals):
         "DFA-α1": dfa_alpha1
     }
 
+# ✅ ECG signal analysis and trimming
 def analyze_ecg(file_bytes, start_index: int = 0):
-    df = pd.read_csv(io.BytesIO(file_bytes), delimiter=";", decimal=",", skiprows=[1])
-    df.columns = ["Time (s)", "Voltage (mV)"]
-    df = df.astype(float)
+    try:
+        df = pd.read_csv(io.BytesIO(file_bytes), delimiter=";", decimal=",", skiprows=[1])
+        df.columns = ["Time (s)", "Voltage (mV)"]
+        df = df.astype(float)
+    except Exception:
+        raise ValueError("Invalid CSV format. Ensure it uses ';' as delimiter and has numeric time and voltage.")
 
     time = df["Time (s)"].values
     voltage = df["Voltage (mV)"].values * 1000
@@ -72,8 +81,9 @@ def analyze_ecg(file_bytes, start_index: int = 0):
                 true_peak_times.append(time[peaks[i]])
 
     if start_index >= len(true_peaks):
-        raise ValueError("Invalid start index!")
+        raise ValueError(f"Start index {start_index} is out of range. Total peaks: {len(true_peaks)}")
 
+    # ✅ Trim from selected peak
     start_time = time[true_peaks[start_index]]
     mask = time >= start_time
     trimmed_time = time[mask] - start_time
@@ -94,7 +104,7 @@ def analyze_ecg(file_bytes, start_index: int = 0):
 
     hrv = calculate_hrv_metrics(rr_intervals_trimmed)
 
-    # Plot image to buffer
+    # ✅ Plot ECG and encode image to buffer
     buf = io.BytesIO()
     plt.figure(figsize=(12, 5))
     plt.plot(trimmed_time, trimmed_voltage, color='blue', label="Trimmed ECG")
@@ -112,21 +122,26 @@ def analyze_ecg(file_bytes, start_index: int = 0):
     return buf, {
         "hrvMetrics": hrv,
         "rrTable": [
-            {"timestamp": true_peak_times_trimmed[i], "rr": None if i == 0 else rr_intervals_trimmed[i - 1]}
-            for i in range(len(true_peak_times_trimmed))
+            {
+                "timestamp": true_peak_times_trimmed[i],
+                "rr": None if i == 0 else rr_intervals_trimmed[i - 1]
+            } for i in range(len(true_peak_times_trimmed))
         ]
     }
 
+# ✅ API endpoint
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:
         content = await file.read()
         plot_buf, analysis = analyze_ecg(content, start_index)
-
         return StreamingResponse(
             plot_buf,
             media_type="image/png",
-            headers={"X-Metrics": JSONResponse(content=analysis).body.decode()}
+            headers={
+                "X-Metrics": JSONResponse(content=analysis).body.decode("utf-8")
+            }
         )
     except Exception as e:
+        print(f"❌ Error during analysis: {e}")
         raise HTTPException(status_code=400, detail=str(e))

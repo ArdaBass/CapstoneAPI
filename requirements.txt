@@ -1,7 +1,9 @@
 fastapi
-uvicorn
+uvicorn[standard]
 numpy
 pandas
 scipy
+matplotlib
+python-multipart
 nest-asyncio
-pyngrok
+pyngrok  

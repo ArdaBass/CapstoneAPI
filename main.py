@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from scipy.signal import butter, filtfilt, find_peaks
 from scipy.fftpack import fft
 import io
+import json  # Make sure this is at the top
 
 app = FastAPI()
 

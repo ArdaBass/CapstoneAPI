@@ -8,17 +8,44 @@ from scipy.signal import butter, filtfilt, find_peaks
 from scipy.fftpack import fft
 import base64
 import io
+import sqlite3
+import hashlib
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Update for specific frontend in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ----------------- DB Auth Logic -----------------
+def get_user(email: str):
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE email=?", (email,))
+    result = cursor.fetchone()
+    conn.close()
+    return result
+
+@app.post("/login")
+def login(email: str = Form(...), password: str = Form(...)):
+    user = get_user(email)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    stored_hash = user[2]  # (id, email, password_hash)
+    input_hash = hashlib.sha256(password.encode()).hexdigest()
+
+    if stored_hash != input_hash:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    return {"message": "Login successful"}
+# -------------------------------------------------
+
+# ----------------- ECG Utilities -----------------
 def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
     nyquist = 0.5 * fs
     low = lowcut / nyquist
@@ -47,6 +74,7 @@ def calculate_hrv_metrics(rr_intervals):
         "HF_Power": hf_power,
         "DFA_alpha1": dfa_alpha1,
     }
+# -------------------------------------------------
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):

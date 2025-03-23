@@ -7,3 +7,4 @@ matplotlib
 python-multipart
 nest-asyncio
 pyngrok  
+click 

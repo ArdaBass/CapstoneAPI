@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Optional, List
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -8,42 +9,70 @@ from scipy.signal import butter, filtfilt, find_peaks
 from scipy.fftpack import fft
 import base64
 import io
-import sqlite3
-import hashlib
+import pyodbc
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Update for specific frontend in production
+    allow_origins=["*"],  # Restrict in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ----------------- DB Auth Logic -----------------
-def get_user(email: str):
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE email=?", (email,))
-    result = cursor.fetchone()
-    conn.close()
-    return result
+# ----------------- DB Connection -----------------
+def get_db_connection():
+    return pyodbc.connect(
+        f'DRIVER={{ODBC Driver 17 for SQL Server}};'
+        f'SERVER={os.getenv("AZURE_SQL_SERVER")};'
+        f'DATABASE={os.getenv("AZURE_SQL_DATABASE")};'
+        f'UID={os.getenv("AZURE_SQL_USER")};'
+        f'PWD={os.getenv("AZURE_SQL_PASSWORD")}'
+    )
 
-@app.post("/login")
-def login(email: str = Form(...), password: str = Form(...)):
-    user = get_user(email)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+# ----------------- Folder API -----------------
+class FolderCreate(BaseModel):
+    name: str
+    parent_id: Optional[int] = None
 
-    stored_hash = user[2]  # (id, email, password_hash)
-    input_hash = hashlib.sha256(password.encode()).hexdigest()
+@app.post("/folders")
+def create_folder(folder: FolderCreate):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO Folders (Name, ParentId) VALUES (?, ?)",
+            (folder.name, folder.parent_id)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "Folder created successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    if stored_hash != input_hash:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    return {"message": "Login successful"}
-# -------------------------------------------------
+@app.get("/folders")
+def get_folders():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT Id, Name, ParentId FROM Folders")
+        rows = cursor.fetchall()
+        result = [
+            {"id": row[0], "name": row[1], "parent_id": row[2]}
+            for row in rows
+        ]
+        cursor.close()
+        conn.close()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ----------------- ECG Utilities -----------------
 def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
@@ -74,8 +103,8 @@ def calculate_hrv_metrics(rr_intervals):
         "HF_Power": hf_power,
         "DFA_alpha1": dfa_alpha1,
     }
-# -------------------------------------------------
 
+# ----------------- ECG Analyzer Endpoint -----------------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:

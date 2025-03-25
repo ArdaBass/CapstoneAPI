@@ -80,7 +80,6 @@ def get_folders():
         conn.close()
         return folders
     except Exception as e:
-        print("❌ GET /folders error:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/files/{folder_id}")
@@ -95,7 +94,6 @@ def list_files_in_folder(folder_id: int):
         conn.close()
         return files
     except Exception as e:
-        print("❌ Error fetching files:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/download/{file_id}")
@@ -112,7 +110,6 @@ def download_file(file_id: int):
             raise HTTPException(status_code=404, detail="File not found")
         return FileResponse(path=row[0], filename=row[1], media_type="application/octet-stream")
     except Exception as e:
-        print("❌ Download error:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/folders/{folder_id}")
@@ -241,7 +238,6 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         }
 
     except Exception as e:
-        print("❌ ECG Analysis Error:", e)
         raise HTTPException(status_code=400, detail=str(e))
 
 # ---------------- File Upload & Management ----------------
@@ -270,11 +266,10 @@ async def upload_file(file: UploadFile = File(...), folder_id: int = Form(...)):
 
         return {"message": "File uploaded successfully"}
     except Exception as e:
-        print("❌ Upload failed:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/files/{file_id}/move")
-def move_file(file_id: int, new_folder_id: int):
+async def move_file(file_id: int, new_folder_id: int = Form(...)):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -285,7 +280,6 @@ def move_file(file_id: int, new_folder_id: int):
         return {"message": "File moved successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.put("/files/{file_id}/rename")
 def rename_file(file_id: int, new_name: str = Form(...)):

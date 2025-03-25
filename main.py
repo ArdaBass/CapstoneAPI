@@ -274,7 +274,7 @@ async def upload_file(file: UploadFile = File(...), folder_id: int = Form(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/files/{file_id}/move")
-def move_file(file_id: int, new_folder_id: int = Form(...)):
+def move_file(file_id: int, new_folder_id: int):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -285,6 +285,7 @@ def move_file(file_id: int, new_folder_id: int = Form(...)):
         return {"message": "File moved successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.put("/files/{file_id}/rename")
 def rename_file(file_id: int, new_name: str = Form(...)):

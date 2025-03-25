@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -9,12 +9,10 @@ from scipy.signal import butter, filtfilt, find_peaks
 from scipy.fftpack import fft
 import base64
 import io
-import pyodbc
+import pymssql
 import os
 import uuid
 from datetime import datetime
-import pymssql
-
 
 app = FastAPI()
 
@@ -45,7 +43,7 @@ def create_folder(folder: FolderCreate):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO Folders (Name, ParentId) VALUES (?, ?)", (folder.name, folder.parent_id))
+        cursor.execute("INSERT INTO Folders (Name, ParentId) VALUES (%s, %s)", (folder.name, folder.parent_id))
         conn.commit()
         cursor.close()
         conn.close()
@@ -81,16 +79,30 @@ def get_folders():
         conn.close()
         return folders
     except Exception as e:
-        print("❌ GET /folders error:", e)  # 👈 Add this line
+        print("❌ GET /folders error:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/files/{folder_id}")
+def list_files_in_folder(folder_id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT Id, FileName FROM Files WHERE FolderId = %s", (folder_id,))
+        rows = cursor.fetchall()
+        files = [{"id": row[0], "name": row[1]} for row in rows]
+        cursor.close()
+        conn.close()
+        return files
+    except Exception as e:
+        print("❌ Error fetching files:", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/folders/{folder_id}")
 def delete_folder(folder_id: int):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM Folders WHERE Id = ?", (folder_id,))
+        cursor.execute("DELETE FROM Folders WHERE Id = %s", (folder_id,))
         conn.commit()
         cursor.close()
         conn.close()
@@ -103,7 +115,7 @@ def rename_folder(folder_id: int, new_name: str = Form(...)):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("UPDATE Folders SET Name = ? WHERE Id = ?", (new_name, folder_id))
+        cursor.execute("UPDATE Folders SET Name = %s WHERE Id = %s", (new_name, folder_id))
         conn.commit()
         cursor.close()
         conn.close()
@@ -231,10 +243,7 @@ async def upload_file(file: UploadFile = File(...), folder_id: int = Form(...)):
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            """
-            INSERT INTO Files (FolderId, FileName, FilePath, UploadedAt)
-            VALUES (?, ?, ?, ?)
-            """,
+            "INSERT INTO Files (FolderId, FileName, FilePath, UploadedAt) VALUES (%s, %s, %s, %s)",
             (folder_id, file.filename, saved_path, datetime.utcnow())
         )
         conn.commit()
@@ -251,7 +260,7 @@ def move_file(file_id: int, new_folder_id: int = Form(...)):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("UPDATE Files SET FolderId = ? WHERE Id = ?", (new_folder_id, file_id))
+        cursor.execute("UPDATE Files SET FolderId = %s WHERE Id = %s", (new_folder_id, file_id))
         conn.commit()
         cursor.close()
         conn.close()
@@ -264,7 +273,7 @@ def rename_file(file_id: int, new_name: str = Form(...)):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("UPDATE Files SET FileName = ? WHERE Id = ?", (new_name, file_id))
+        cursor.execute("UPDATE Files SET FileName = %s WHERE Id = %s", (new_name, file_id))
         conn.commit()
         cursor.close()
         conn.close()
@@ -277,11 +286,11 @@ def delete_file(file_id: int):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT FilePath FROM Files WHERE Id = ?", (file_id,))
+        cursor.execute("SELECT FilePath FROM Files WHERE Id = %s", (file_id,))
         row = cursor.fetchone()
         if row and os.path.exists(row[0]):
             os.remove(row[0])
-        cursor.execute("DELETE FROM Files WHERE Id = ?", (file_id,))
+        cursor.execute("DELETE FROM Files WHERE Id = %s", (file_id,))
         conn.commit()
         cursor.close()
         conn.close()

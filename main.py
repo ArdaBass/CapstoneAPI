@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -11,9 +11,11 @@ import base64
 import io
 import pyodbc
 import os
+import uuid
+from datetime import datetime
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load environment variables from .env
 load_dotenv()
 
 app = FastAPI()
@@ -26,17 +28,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ----------------- DB Connection -----------------
+# ---------------- DB Connection ----------------
 def get_db_connection():
     return pyodbc.connect(
         f'DRIVER={{ODBC Driver 17 for SQL Server}};'
         f'SERVER={os.getenv("AZURE_SQL_SERVER")};'
         f'DATABASE={os.getenv("AZURE_SQL_DATABASE")};'
         f'UID={os.getenv("AZURE_SQL_USER")};'
-        f'PWD={os.getenv("AZURE_SQL_PASSWORD")}'
-    )
+        f'PWD={os.getenv("AZURE_SQL_PASSWORD")}')
 
-# ----------------- Folder API -----------------
+# ---------------- Folder API ----------------
 class FolderCreate(BaseModel):
     name: str
     parent_id: Optional[int] = None
@@ -46,10 +47,7 @@ def create_folder(folder: FolderCreate):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO Folders (Name, ParentId) VALUES (?, ?)",
-            (folder.name, folder.parent_id)
-        )
+        cursor.execute("INSERT INTO Folders (Name, ParentId) VALUES (?, ?)", (folder.name, folder.parent_id))
         conn.commit()
         cursor.close()
         conn.close()
@@ -64,17 +62,40 @@ def get_folders():
         cursor = conn.cursor()
         cursor.execute("SELECT Id, Name, ParentId FROM Folders")
         rows = cursor.fetchall()
-        result = [
-            {"id": row[0], "name": row[1], "parent_id": row[2]}
-            for row in rows
-        ]
+        result = [{"id": row[0], "name": row[1], "parent_id": row[2]} for row in rows]
         cursor.close()
         conn.close()
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ----------------- ECG Utilities -----------------
+@app.delete("/folders/{folder_id}")
+def delete_folder(folder_id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM Folders WHERE Id = ?", (folder_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "Folder deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/folders/{folder_id}")
+def rename_folder(folder_id: int, new_name: str = Form(...)):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Folders SET Name = ? WHERE Id = ?", (new_name, folder_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "Folder renamed"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ---------------- ECG Utilities ----------------
 def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
     nyquist = 0.5 * fs
     low = lowcut / nyquist
@@ -104,7 +125,7 @@ def calculate_hrv_metrics(rr_intervals):
         "DFA_alpha1": dfa_alpha1,
     }
 
-# ----------------- ECG Analyzer Endpoint -----------------
+# ---------------- ECG Analyzer ----------------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:
@@ -181,3 +202,80 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     except Exception as e:
         print(f"❌ Error during analysis: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+# ---------------- File Upload & Management ----------------
+UPLOAD_DIR = "uploaded_files"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+@app.post("/upload-file")
+async def upload_file(file: UploadFile = File(...), folder_id: int = Form(...)):
+    try:
+        file_ext = os.path.splitext(file.filename)[1]
+        unique_name = f"{uuid.uuid4().hex}{file_ext}"
+        saved_path = os.path.join(UPLOAD_DIR, unique_name)
+
+        with open(saved_path, "wb") as f:
+            f.write(await file.read())
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO Files (FolderId, FileName, FilePath, UploadedAt)
+            VALUES (?, ?, ?, ?)
+            """,
+            (folder_id, file.filename, saved_path, datetime.utcnow())
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return {"message": "File uploaded successfully"}
+    except Exception as e:
+        print("❌ Upload failed:", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/files/{file_id}/move")
+def move_file(file_id: int, new_folder_id: int = Form(...)):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Files SET FolderId = ? WHERE Id = ?", (new_folder_id, file_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "File moved successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/files/{file_id}/rename")
+def rename_file(file_id: int, new_name: str = Form(...)):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Files SET FileName = ? WHERE Id = ?", (new_name, file_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "File renamed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/files/{file_id}")
+def delete_file(file_id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT FilePath FROM Files WHERE Id = ?", (file_id,))
+        row = cursor.fetchone()
+        if row:
+            file_path = row[0]
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        cursor.execute("DELETE FROM Files WHERE Id = ?", (file_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "File deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

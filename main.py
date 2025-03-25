@@ -80,7 +80,9 @@ def get_folders():
         conn.close()
         return folders
     except Exception as e:
+        print("❌ GET /folders error:", e)  # 👈 Add this line
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/folders/{folder_id}")
 def delete_folder(folder_id: int):

@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,16 +13,12 @@ import pyodbc
 import os
 import uuid
 from datetime import datetime
-from dotenv import load_dotenv
-
-# Load environment variables from .env
-load_dotenv()
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -31,11 +27,12 @@ app.add_middleware(
 # ---------------- DB Connection ----------------
 def get_db_connection():
     return pyodbc.connect(
-        f'DRIVER={{ODBC Driver 17 for SQL Server}};'
-        f'SERVER={os.getenv("AZURE_SQL_SERVER")};'
-        f'DATABASE={os.getenv("AZURE_SQL_DATABASE")};'
-        f'UID={os.getenv("AZURE_SQL_USER")};'
-        f'PWD={os.getenv("AZURE_SQL_PASSWORD")}')
+        'DRIVER={ODBC Driver 17 for SQL Server};'
+        'SERVER=aktekworkers.database.windows.net;'
+        'DATABASE=capstone;'
+        'UID=sqladmin;'
+        'PWD=nd1W594.'
+    )
 
 # ---------------- Folder API ----------------
 class FolderCreate(BaseModel):
@@ -61,11 +58,27 @@ def get_folders():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT Id, Name, ParentId FROM Folders")
-        rows = cursor.fetchall()
-        result = [{"id": row[0], "name": row[1], "parent_id": row[2]} for row in rows]
+        folder_rows = cursor.fetchall()
+
+        cursor.execute("SELECT Id, FolderId, FileName FROM Files")
+        file_rows = cursor.fetchall()
+
+        folders = []
+        for folder in folder_rows:
+            folder_id = folder[0]
+            files = [
+                {"id": f[0], "name": f[2]} for f in file_rows if f[1] == folder_id
+            ]
+            folders.append({
+                "id": folder[0],
+                "name": folder[1],
+                "parent_id": folder[2],
+                "files": files
+            })
+
         cursor.close()
         conn.close()
-        return result
+        return folders
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -153,7 +166,7 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
                     true_peak_times.append(time[peaks[i]])
 
         if start_index >= len(true_peaks):
-            raise ValueError(f"Start index {start_index} is out of range. Total peaks: {len(true_peaks)}")
+            raise ValueError(f"Start index {start_index} is out of range.")
 
         start_time = time[true_peaks[start_index]]
         mask = time >= start_time
@@ -177,13 +190,8 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
 
         buf = io.BytesIO()
         plt.figure(figsize=(12, 5))
-        plt.plot(trimmed_time, trimmed_voltage, color='blue', label="Trimmed ECG")
-        plt.scatter(trimmed_time[true_peaks_trimmed], trimmed_voltage[true_peaks_trimmed], color='red', label="Trimmed Peaks", zorder=3)
-        plt.xlabel("Time (s)")
-        plt.ylabel("Voltage (µV)")
-        plt.title(f"Trimmed ECG from Peak #{start_index}")
-        plt.legend()
-        plt.grid(True)
+        plt.plot(trimmed_time, trimmed_voltage, color='blue')
+        plt.scatter(trimmed_time[true_peaks_trimmed], trimmed_voltage[true_peaks_trimmed], color='red')
         plt.tight_layout()
         plt.savefig(buf, format="png")
         plt.close()
@@ -200,7 +208,7 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         }
 
     except Exception as e:
-        print(f"❌ Error during analysis: {e}")
+        print("❌ ECG Analysis Error:", e)
         raise HTTPException(status_code=400, detail=str(e))
 
 # ---------------- File Upload & Management ----------------
@@ -268,10 +276,8 @@ def delete_file(file_id: int):
         cursor = conn.cursor()
         cursor.execute("SELECT FilePath FROM Files WHERE Id = ?", (file_id,))
         row = cursor.fetchone()
-        if row:
-            file_path = row[0]
-            if os.path.exists(file_path):
-                os.remove(file_path)
+        if row and os.path.exists(row[0]):
+            os.remove(row[0])
         cursor.execute("DELETE FROM Files WHERE Id = ?", (file_id,))
         conn.commit()
         cursor.close()

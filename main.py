@@ -13,6 +13,8 @@ import pyodbc
 import os
 import uuid
 from datetime import datetime
+import pymssql
+
 
 app = FastAPI()
 
@@ -26,12 +28,11 @@ app.add_middleware(
 
 # ---------------- DB Connection ----------------
 def get_db_connection():
-    return pyodbc.connect(
-        'DRIVER={ODBC Driver 17 for SQL Server};'
-        'SERVER=aktekworkers.database.windows.net;'
-        'DATABASE=capstone;'
-        'UID=sqladmin;'
-        'PWD=nd1W594.'
+    return pymssql.connect(
+        server="aktekworkers.database.windows.net",
+        user="sqladmin",
+        password="nd1W594.",
+        database="capstone"
     )
 
 # ---------------- Folder API ----------------

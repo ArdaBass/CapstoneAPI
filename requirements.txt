@@ -8,3 +8,5 @@ python-multipart
 nest-asyncio
 pyngrok  
 click 
+pyodbc
+python-dotenv

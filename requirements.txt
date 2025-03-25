@@ -10,3 +10,4 @@ pyngrok
 click 
 pyodbc
 python-dotenv
+pymssql

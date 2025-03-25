@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 import numpy as np
@@ -95,6 +96,23 @@ def list_files_in_folder(folder_id: int):
         return files
     except Exception as e:
         print("❌ Error fetching files:", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/download/{file_id}")
+def download_file(file_id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT FilePath, FileName FROM Files WHERE Id = %s", (file_id,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not row or not os.path.exists(row[0]):
+            raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(path=row[0], filename=row[1], media_type="application/octet-stream")
+    except Exception as e:
+        print("❌ Download error:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/folders/{folder_id}")

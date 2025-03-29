@@ -10,12 +10,10 @@ from scipy.signal import butter, filtfilt, find_peaks
 from scipy.fftpack import fft
 import base64
 import io
-import sqlalchemy
-from sqlalchemy import create_engine, text
+import pymssql
 import os
 import uuid
 from datetime import datetime
-import urllib
 
 app = FastAPI()
 
@@ -27,11 +25,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------- SQLAlchemy Engine with Pooling ----------------
-conn_str = urllib.parse.quote_plus(
-    "DRIVER={ODBC Driver 17 for SQL Server};SERVER=aktekworkers.database.windows.net;UID=sqladmin;PWD=nd1W594.;DATABASE=capstone"
-)
-engine = create_engine(f"mssql+pyodbc:///?odbc_connect={conn_str}", pool_pre_ping=True, pool_size=5, max_overflow=10)
+# ---------------- pymssql DB Connection ----------------
+def get_db_connection():
+    return pymssql.connect(
+        server="aktekworkers.database.windows.net",
+        user="sqladmin",
+        password="nd1W594.",
+        database="capstone"
+    )
 
 UPLOAD_DIR = "uploaded_files"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -45,8 +46,12 @@ class FolderCreate(BaseModel):
 @app.post("/folders")
 def create_folder(folder: FolderCreate):
     try:
-        with engine.begin() as conn:
-            conn.execute(text("INSERT INTO Folders (Name, ParentId) VALUES (:name, :parent_id)"), folder.dict())
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO Folders (Name, ParentId) VALUES (%s, %s)", (folder.name, folder.parent_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
         return {"message": "Folder created successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -54,52 +59,71 @@ def create_folder(folder: FolderCreate):
 @app.get("/folders")
 def get_folders():
     try:
-        with engine.connect() as conn:
-            folder_rows = conn.execute(text("SELECT Id, Name, ParentId FROM Folders")).fetchall()
-            file_rows = conn.execute(text("SELECT Id, FolderId, FileName FROM Files")).fetchall()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT Id, Name, ParentId FROM Folders")
+        folder_rows = cursor.fetchall()
+
+        cursor.execute("SELECT Id, FolderId, FileName FROM Files")
+        file_rows = cursor.fetchall()
 
         folders = []
         for folder in folder_rows:
+            folder_id = folder[0]
             files = [
-                {"id": f.Id, "name": f.FileName} for f in file_rows if f.FolderId == folder.Id
+                {"id": f[0], "name": f[2]} for f in file_rows if f[1] == folder_id
             ]
             folders.append({
-                "id": folder.Id,
-                "name": folder.Name,
-                "parent_id": folder.ParentId,
+                "id": folder[0],
+                "name": folder[1],
+                "parent_id": folder[2],
                 "files": files
             })
-        return folders
 
+        cursor.close()
+        conn.close()
+        return folders
     except Exception as e:
-        print("🔥 ERROR in /folders:", str(e))  # Add this line
+        print("🔥 ERROR in /folders:", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/files/{folder_id}")
 def list_files_in_folder(folder_id: int):
     try:
-        with engine.connect() as conn:
-            rows = conn.execute(text("SELECT Id, FileName FROM Files WHERE FolderId = :fid"), {"fid": folder_id}).fetchall()
-        return [{"id": row.Id, "name": row.FileName} for row in rows]
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT Id, FileName FROM Files WHERE FolderId = %s", (folder_id,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [{"id": row[0], "name": row[1]} for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/download/{file_id}")
 def download_file(file_id: int):
     try:
-        with engine.connect() as conn:
-            row = conn.execute(text("SELECT FilePath, FileName FROM Files WHERE Id = :fid"), {"fid": file_id}).fetchone()
-        if not row or not os.path.exists(row.FilePath):
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT FilePath, FileName FROM Files WHERE Id = %s", (file_id,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if not row or not os.path.exists(row[0]):
             raise HTTPException(status_code=404, detail="File not found")
-        return FileResponse(path=row.FilePath, filename=row.FileName, media_type="application/octet-stream")
+        return FileResponse(path=row[0], filename=row[1], media_type="application/octet-stream")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/folders/{folder_id}")
 def delete_folder(folder_id: int):
     try:
-        with engine.begin() as conn:
-            conn.execute(text("DELETE FROM Folders WHERE Id = :fid"), {"fid": folder_id})
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM Folders WHERE Id = %s", (folder_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
         return {"message": "Folder deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -107,8 +131,12 @@ def delete_folder(folder_id: int):
 @app.put("/folders/{folder_id}")
 def rename_folder(folder_id: int, new_name: str = Form(...)):
     try:
-        with engine.begin() as conn:
-            conn.execute(text("UPDATE Folders SET Name = :name WHERE Id = :fid"), {"name": new_name, "fid": folder_id})
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Folders SET Name = %s WHERE Id = %s", (new_name, folder_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
         return {"message": "Folder renamed"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -226,13 +254,15 @@ async def upload_file(file: UploadFile = File(...), folder_id: int = Form(...)):
         with open(saved_path, "wb") as f:
             f.write(await file.read())
 
-        with engine.begin() as conn:
-            conn.execute(text("INSERT INTO Files (FolderId, FileName, FilePath, UploadedAt) VALUES (:fid, :fn, :fp, :up)"), {
-                "fid": folder_id,
-                "fn": file.filename,
-                "fp": saved_path,
-                "up": datetime.utcnow()
-            })
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO Files (FolderId, FileName, FilePath, UploadedAt) VALUES (%s, %s, %s, %s)",
+            (folder_id, file.filename, saved_path, datetime.utcnow())
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
 
         return {"message": "File uploaded successfully"}
     except Exception as e:
@@ -241,8 +271,12 @@ async def upload_file(file: UploadFile = File(...), folder_id: int = Form(...)):
 @app.put("/files/{file_id}/move")
 async def move_file(file_id: int, new_folder_id: int = Form(...)):
     try:
-        with engine.begin() as conn:
-            conn.execute(text("UPDATE Files SET FolderId = :fid WHERE Id = :id"), {"fid": new_folder_id, "id": file_id})
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Files SET FolderId = %s WHERE Id = %s", (new_folder_id, file_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
         return {"message": "File moved successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -250,8 +284,12 @@ async def move_file(file_id: int, new_folder_id: int = Form(...)):
 @app.put("/files/{file_id}/rename")
 def rename_file(file_id: int, new_name: str = Form(...)):
     try:
-        with engine.begin() as conn:
-            conn.execute(text("UPDATE Files SET FileName = :name WHERE Id = :id"), {"name": new_name, "id": file_id})
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Files SET FileName = %s WHERE Id = %s", (new_name, file_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
         return {"message": "File renamed successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -259,11 +297,16 @@ def rename_file(file_id: int, new_name: str = Form(...)):
 @app.delete("/files/{file_id}")
 def delete_file(file_id: int):
     try:
-        with engine.begin() as conn:
-            row = conn.execute(text("SELECT FilePath FROM Files WHERE Id = :id"), {"id": file_id}).fetchone()
-            if row and os.path.exists(row.FilePath):
-                os.remove(row.FilePath)
-            conn.execute(text("DELETE FROM Files WHERE Id = :id"), {"id": file_id})
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT FilePath FROM Files WHERE Id = %s", (file_id,))
+        row = cursor.fetchone()
+        if row and os.path.exists(row[0]):
+            os.remove(row[0])
+        cursor.execute("DELETE FROM Files WHERE Id = %s", (file_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
         return {"message": "File deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

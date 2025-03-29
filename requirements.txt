@@ -6,6 +6,5 @@ scipy
 matplotlib
 python-multipart
 nest-asyncio
-pyodbc
-sqlalchemy>=2.0,<3.0
+pymssql
 python-dotenv

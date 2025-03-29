@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -57,33 +57,34 @@ def create_folder(folder: FolderCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/folders")
-def get_top_level_folders():
+def get_folders():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT Id, Name, ParentId FROM Folders WHERE ParentId IS NULL")
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        return [
-            {"id": row[0], "name": row[1], "parent_id": row[2]} for row in rows
-        ]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        cursor.execute("SELECT Id, Name, ParentId FROM Folders")
+        folder_rows = cursor.fetchall()
 
-@app.get("/folders/{parent_id}/subfolders")
-def get_subfolders(parent_id: int):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT Id, Name, ParentId FROM Folders WHERE ParentId = %s", (parent_id,))
-        rows = cursor.fetchall()
+        cursor.execute("SELECT Id, FolderId, FileName FROM Files")
+        file_rows = cursor.fetchall()
+
+        folders = []
+        for folder in folder_rows:
+            folder_id = folder[0]
+            files = [
+                {"id": f[0], "name": f[2]} for f in file_rows if f[1] == folder_id
+            ]
+            folders.append({
+                "id": folder[0],
+                "name": folder[1],
+                "parent_id": folder[2],
+                "files": files
+            })
+
         cursor.close()
         conn.close()
-        return [
-            {"id": row[0], "name": row[1], "parent_id": row[2]} for row in rows
-        ]
+        return folders
     except Exception as e:
+        print("🔥 ERROR in /folders:", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/files/{folder_id}")

@@ -70,7 +70,9 @@ def get_folders():
                 "files": files
             })
         return folders
+
     except Exception as e:
+        print("🔥 ERROR in /folders:", str(e))  # Add this line
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/files/{folder_id}")

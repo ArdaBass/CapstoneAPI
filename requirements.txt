@@ -8,3 +8,4 @@ python-multipart
 nest-asyncio
 pymssql
 python-dotenv
+azure-storage-blob

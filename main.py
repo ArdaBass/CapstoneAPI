@@ -113,14 +113,19 @@ def download_file(file_id: int):
         if not row:
             raise HTTPException(status_code=404, detail="File not found in database")
 
-        file_path, file_name = row
-        if not file_path or not os.path.isfile(file_path):
-            raise HTTPException(status_code=404, detail=f"File path does not exist: {file_path}")
+        relative_path, filename = row
+        full_path = os.path.join(os.getcwd(), relative_path)
 
-        return FileResponse(path=file_path, filename=file_name, media_type="application/octet-stream")
+        print("📁 Downloading file:", full_path)
+
+        if not os.path.exists(full_path):
+            raise HTTPException(status_code=404, detail=f"File does not exist: {full_path}")
+
+        return FileResponse(path=full_path, filename=filename, media_type="application/octet-stream")
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+        print("🔥 Error in /download:", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/folders/{folder_id}")

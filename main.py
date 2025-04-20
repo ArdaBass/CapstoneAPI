@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 import numpy as np
@@ -14,9 +14,20 @@ import pymssql
 import os
 import uuid
 from datetime import datetime
+from azure.storage.blob import BlobServiceClient
 
+# ---------------- Azure Setup ----------------
+AZURE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=hrvstoragearda;AccountKey=PC3HHRI4bnsph1dHH96K4t8UyE6Z6nM7Uvgw1AiNVmsQ76DxDuMC+/tkz88nWq1xXmVt2BN+hRjP+AStzuAmEQ==;EndpointSuffix=core.windows.net"
+AZURE_CONTAINER = "capstone-files"
+blob_service = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
+container_client = blob_service.get_container_client(AZURE_CONTAINER)
+try:
+    container_client.create_container()
+except Exception:
+    pass
+
+# ---------------- FastAPI Setup ----------------
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,15 +45,12 @@ def get_db_connection():
         database="capstone"
     )
 
-UPLOAD_DIR = "uploaded_files"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
 # ---------------- Models ----------------
 class FolderCreate(BaseModel):
     name: str
     parent_id: Optional[int] = None
 
-# ---------------- Folder Routes ----------------
+# ---------------- Folder Endpoints ----------------
 @app.post("/folders")
 def create_folder(folder: FolderCreate):
     try:
@@ -70,9 +78,7 @@ def get_folders():
         folders = []
         for folder in folder_rows:
             folder_id = folder[0]
-            files = [
-                {"id": f[0], "name": f[2]} for f in file_rows if f[1] == folder_id
-            ]
+            files = [{"id": f[0], "name": f[2]} for f in file_rows if f[1] == folder_id]
             folders.append({
                 "id": folder[0],
                 "name": folder[1],
@@ -84,22 +90,33 @@ def get_folders():
         conn.close()
         return folders
     except Exception as e:
-        print("🔥 ERROR in /folders:", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/files/{folder_id}")
-def list_files_in_folder(folder_id: int):
+# ---------------- File Upload ----------------
+@app.post("/upload-file")
+async def upload_file(file: UploadFile = File(...), folder_id: int = Form(...)):
     try:
+        file_ext = os.path.splitext(file.filename)[1]
+        unique_blob_name = f"{uuid.uuid4().hex}{file_ext}"
+
+        blob_client = container_client.get_blob_client(unique_blob_name)
+        blob_client.upload_blob(await file.read(), overwrite=True)
+
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT Id, FileName FROM Files WHERE FolderId = %s", (folder_id,))
-        rows = cursor.fetchall()
+        cursor.execute(
+            "INSERT INTO Files (FolderId, FileName, FilePath, UploadedAt) VALUES (%s, %s, %s, %s)",
+            (folder_id, file.filename, unique_blob_name, datetime.utcnow())
+        )
+        conn.commit()
         cursor.close()
         conn.close()
-        return [{"id": row[0], "name": row[1]} for row in rows]
+
+        return {"message": "File uploaded successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ---------------- File Download ----------------
 @app.get("/download/{file_id}")
 def download_file(file_id: int):
     try:
@@ -111,50 +128,16 @@ def download_file(file_id: int):
         conn.close()
 
         if not row:
-            raise HTTPException(status_code=404, detail="File not found in database")
+            raise HTTPException(status_code=404, detail="File not found")
 
-        relative_path, filename = row
-        full_path = os.path.join(os.getcwd(), relative_path)
-
-        print("📁 Downloading file:", full_path)
-
-        if not os.path.exists(full_path):
-            raise HTTPException(status_code=404, detail=f"File does not exist: {full_path}")
-
-        return FileResponse(path=full_path, filename=filename, media_type="application/octet-stream")
-
-    except Exception as e:
-        print("🔥 Error in /download:", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/folders/{folder_id}")
-def delete_folder(folder_id: int):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM Folders WHERE Id = %s", (folder_id,))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return {"message": "Folder deleted"}
+        blob_path, filename = row
+        blob_client = container_client.get_blob_client(blob_path)
+        stream = blob_client.download_blob()
+        return StreamingResponse(stream.chunks(), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/folders/{folder_id}")
-def rename_folder(folder_id: int, new_name: str = Form(...)):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE Folders SET Name = %s WHERE Id = %s", (new_name, folder_id))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return {"message": "Folder renamed"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ---------------- ECG Utils ----------------
+# ---------------- ECG & HRV Analysis ----------------
 def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
     nyquist = 0.5 * fs
     low = lowcut / nyquist
@@ -184,7 +167,6 @@ def calculate_hrv_metrics(rr_intervals):
         "DFA_alpha1": dfa_alpha1,
     }
 
-# ---------------- Analyze Route ----------------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:
@@ -252,74 +234,5 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
                 for i in range(len(true_peak_times_trimmed))
             ]
         }
-
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-# ---------------- Upload & File Operations ----------------
-@app.post("/upload-file")
-async def upload_file(file: UploadFile = File(...), folder_id: int = Form(...)):
-    try:
-        file_ext = os.path.splitext(file.filename)[1]
-        unique_name = f"{uuid.uuid4().hex}{file_ext}"
-        saved_path = os.path.join(UPLOAD_DIR, unique_name)
-
-        with open(saved_path, "wb") as f:
-            f.write(await file.read())
-
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO Files (FolderId, FileName, FilePath, UploadedAt) VALUES (%s, %s, %s, %s)",
-            (folder_id, file.filename, saved_path, datetime.utcnow())
-        )
-        conn.commit()
-        cursor.close()
-        conn.close()
-
-        return {"message": "File uploaded successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/files/{file_id}/move")
-async def move_file(file_id: int, new_folder_id: int = Form(...)):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE Files SET FolderId = %s WHERE Id = %s", (new_folder_id, file_id))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return {"message": "File moved successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/files/{file_id}/rename")
-def rename_file(file_id: int, new_name: str = Form(...)):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE Files SET FileName = %s WHERE Id = %s", (new_name, file_id))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return {"message": "File renamed successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/files/{file_id}")
-def delete_file(file_id: int):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT FilePath FROM Files WHERE Id = %s", (file_id,))
-        row = cursor.fetchone()
-        if row and os.path.exists(row[0]):
-            os.remove(row[0])
-        cursor.execute("DELETE FROM Files WHERE Id = %s", (file_id,))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return {"message": "File deleted"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

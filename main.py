@@ -137,7 +137,6 @@ def download_file(file_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.put("/files/{file_id}/move")
 async def move_file(file_id: int, new_folder_id: int = Form(...)):
     try:
@@ -150,7 +149,6 @@ async def move_file(file_id: int, new_folder_id: int = Form(...)):
         return {"message": "File moved successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ---------------- ECG & HRV Analysis ----------------
 def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
@@ -195,7 +193,7 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         filtered = np.clip(filtered, -600, 600)
 
         threshold = np.mean(filtered) + 1.8 * np.std(filtered)
-        peaks, _ = find_peaks(filtered, height=threshold, distance=60)
+        peaks, _ = find_peaks(filtered, height=threshold, distance=60, prominence=150)
 
         true_peaks = []
         true_peak_times = []
@@ -216,7 +214,7 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         trimmed_time = time[mask] - start_time
         trimmed_voltage = filtered[mask]
 
-        t_peaks, _ = find_peaks(trimmed_voltage, height=np.mean(trimmed_voltage) + 1.8 * np.std(trimmed_voltage), distance=60)
+        t_peaks, _ = find_peaks(trimmed_voltage, height=np.mean(trimmed_voltage) + 1.8 * np.std(trimmed_voltage), distance=60, prominence=150)
         true_peaks_trimmed, rr_intervals_trimmed, true_peak_times_trimmed = [], [], []
 
         if len(t_peaks):

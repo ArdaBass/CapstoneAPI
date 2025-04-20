@@ -109,11 +109,19 @@ def download_file(file_id: int):
         row = cursor.fetchone()
         cursor.close()
         conn.close()
-        if not row or not os.path.exists(row[0]):
-            raise HTTPException(status_code=404, detail="File not found")
-        return FileResponse(path=row[0], filename=row[1], media_type="application/octet-stream")
+
+        if not row:
+            raise HTTPException(status_code=404, detail="File not found in database")
+
+        file_path, file_name = row
+        if not file_path or not os.path.isfile(file_path):
+            raise HTTPException(status_code=404, detail=f"File path does not exist: {file_path}")
+
+        return FileResponse(path=file_path, filename=file_name, media_type="application/octet-stream")
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
 
 @app.delete("/folders/{folder_id}")
 def delete_folder(folder_id: int):

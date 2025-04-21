@@ -249,3 +249,62 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/trim-and-save")
+async def trim_and_save(file: UploadFile = File(...), start_index: int = Form(0), folder_id: int = Form(...)):
+    try:
+        df = pd.read_csv(file.file, delimiter=";", decimal=",", skiprows=[1])
+        df.columns = ["Time (s)", "Voltage (mV)"]
+        df = df.astype(float)
+
+        time = df["Time (s)"].values
+        voltage = df["Voltage (mV)"].values * 1000
+        filtered = butter_bandpass_filter(voltage)
+        filtered = np.clip(filtered, -600, 600)
+
+        threshold = np.mean(filtered) + 1.8 * np.std(filtered)
+        peaks, _ = find_peaks(filtered, height=threshold, distance=60, prominence=150)
+
+        true_peaks = []
+        if len(peaks):
+            true_peaks.append(peaks[0])
+            for i in range(1, len(peaks)):
+                rr = time[peaks[i]] - time[true_peaks[-1]]
+                if 0.3 < rr < 1.5:
+                    true_peaks.append(peaks[i])
+
+        if start_index >= len(true_peaks):
+            raise ValueError(f"Start index {start_index} is out of range.")
+
+        start_time = time[true_peaks[start_index]]
+        mask = time >= start_time
+        trimmed_time = time[mask] - start_time
+        trimmed_voltage = filtered[mask]
+
+        # Prepare CSV in time,voltage format
+        csv_buf = io.StringIO()
+        pd.DataFrame({
+            "Combined": [f"{t:.6f},{v:.12f}" for t, v in zip(trimmed_time, trimmed_voltage)]
+        }).to_csv(csv_buf, index=False, header=False)
+        csv_bytes = csv_buf.getvalue().encode("utf-8")
+
+        # Upload to Azure
+        trimmed_name = f"trimmed_{uuid.uuid4().hex}.csv"
+        blob_client = container_client.get_blob_client(trimmed_name)
+        blob_client.upload_blob(csv_bytes, overwrite=True)
+
+        # Save to DB
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO Files (FolderId, FileName, FilePath, UploadedAt) VALUES (%s, %s, %s, %s)",
+            (folder_id, trimmed_name, trimmed_name, datetime.utcnow())
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return {"message": "Trimmed file saved successfully", "filename": trimmed_name}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+

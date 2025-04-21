@@ -17,7 +17,7 @@ from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 
 # ---------------- Azure Setup ----------------
-AZURE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=hrvstoragearda;AccountKey=PC3HHRI4bnsph1dHH96K4t8UyE6Z6nM7Uvgw1AiNVmsQ76DxDuMC+/tkz88nWq1xXmVt2BN+hRjP+AStzuAmEQ==;EndpointSuffix=core.windows.net"
+AZURE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=hrvstoragearda;AccountKey=...==;EndpointSuffix=core.windows.net"
 AZURE_CONTAINER = "capstone-files"
 blob_service = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
 container_client = blob_service.get_container_client(AZURE_CONTAINER)
@@ -94,10 +94,11 @@ def get_folders():
 
 # ---------------- File Upload ----------------
 @app.post("/upload-file")
-async def upload_file(file: UploadFile = File(...), folder_id: int = Form(...)):
+async def upload_file(file: UploadFile = File(...), folder_id: int = Form(...), is_trimmed: bool = Form(False)):
     try:
         file_ext = os.path.splitext(file.filename)[1]
-        unique_blob_name = f"{uuid.uuid4().hex}{file_ext}"
+        suffix = "_trimmed" if is_trimmed else ""
+        unique_blob_name = f"{uuid.uuid4().hex}{suffix}{file_ext}"
 
         blob_client = container_client.get_blob_client(unique_blob_name)
         blob_client.upload_blob(await file.read(), overwrite=True)
@@ -137,19 +138,6 @@ def download_file(file_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/files/{file_id}/move")
-async def move_file(file_id: int, new_folder_id: int = Form(...)):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE Files SET FolderId = %s WHERE Id = %s", (new_folder_id, file_id))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return {"message": "File moved successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 # ---------------- ECG & HRV Analysis ----------------
 def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
     nyquist = 0.5 * fs
@@ -183,7 +171,8 @@ def calculate_hrv_metrics(rr_intervals):
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:
-        df = pd.read_csv(file.file, delimiter=";", decimal=",", skiprows=[1])
+        df = pd.read_csv(file.file, delimiter=";", decimal=",")
+        df = df.iloc[:, :2]
         df.columns = ["Time (s)", "Voltage (mV)"]
         df = df.astype(float)
 
@@ -229,11 +218,10 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
 
         hrv = calculate_hrv_metrics(rr_intervals_trimmed)
 
-        # Return trimmed CSV for download
         csv_buf = io.StringIO()
         pd.DataFrame({
             "Time (s)": trimmed_time,
-            "Voltage (μV)": trimmed_voltage
+            "Voltage (mV)": trimmed_voltage / 1000  # Convert back to mV
         }).to_csv(csv_buf, index=False, sep=";", decimal=",")
 
         buf = io.BytesIO()

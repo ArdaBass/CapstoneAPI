@@ -229,6 +229,13 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
 
         hrv = calculate_hrv_metrics(rr_intervals_trimmed)
 
+        # Return trimmed CSV for download
+        csv_buf = io.StringIO()
+        pd.DataFrame({
+            "Time (s)": trimmed_time,
+            "Voltage (μV)": trimmed_voltage
+        }).to_csv(csv_buf, index=False, sep=";", decimal=",")
+
         buf = io.BytesIO()
         plt.figure(figsize=(12, 5))
         plt.plot(trimmed_time, trimmed_voltage, color='blue')
@@ -245,7 +252,8 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
             "rrTable": [
                 {"timestamp": true_peak_times_trimmed[i], "rr": None if i == 0 else rr_intervals_trimmed[i - 1]}
                 for i in range(len(true_peak_times_trimmed))
-            ]
+            ],
+            "trimmedCsv": csv_buf.getvalue()
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

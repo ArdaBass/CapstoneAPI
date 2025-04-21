@@ -150,36 +150,32 @@ async def move_file(file_id: int, new_folder_id: int = Form(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ---------------- Flexible ECG CSV Parser ----------------
+def parse_ecg_flexible(raw_bytes: bytes) -> pd.DataFrame:
+    from io import StringIO
+    import re
+
+    lines = raw_bytes.decode("utf-8", errors="ignore").splitlines()
+    pattern = re.compile(r"^[-\d.,\t ]+$")
+
+    start_index = next((i for i, line in enumerate(lines) if pattern.match(line.strip())), None)
+    if start_index is None:
+        raise ValueError("No numeric data found in the uploaded file.")
+
+    data_lines = lines[start_index:]
+    sample = data_lines[0]
+
+    delimiter = "," if sample.count(",") >= sample.count(";") and sample.count(",") >= sample.count("\t") else (
+                ";" if sample.count(";") >= sample.count("\t") else "\t")
+
+    df = pd.read_csv(StringIO("\n".join(data_lines)), header=None, sep=delimiter)
+    if df.shape[1] == 1:
+        df = df[0].str.split(",", expand=True)
+    df.columns = ["Time (s)", "Voltage (mV)"]
+    df = df.astype(float)
+    return df
+
 # ---------------- ECG & HRV Analysis ----------------
-def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
-    nyquist = 0.5 * fs
-    low = lowcut / nyquist
-    high = highcut / nyquist
-    b, a = butter(order, [low, high], btype='band')
-    return filtfilt(b, a, data)
-
-def calculate_hrv_metrics(rr_intervals):
-    rr = np.array(rr_intervals)
-    rmssd = np.sqrt(np.mean(np.diff(rr) ** 2)) if len(rr) > 1 else None
-    pnn50 = np.sum(np.abs(np.diff(rr)) > 0.05) / len(rr) * 100 if len(rr) > 1 else None
-    sd1 = np.std(rr) / np.sqrt(2) if len(rr) > 1 else None
-    lf_power = hf_power = None
-    if len(rr) > 1:
-        rr_fft = np.abs(fft(rr - np.mean(rr)))[:len(rr)//2]
-        freqs = np.fft.fftfreq(len(rr), d=np.mean(rr))[:len(rr)//2]
-        lf_power = np.sum(rr_fft[(freqs >= 0.04) & (freqs < 0.15)])
-        hf_power = np.sum(rr_fft[(freqs >= 0.15) & (freqs < 0.4)])
-    dfa_alpha1 = np.std(np.log(rr)) if len(rr) > 1 else None
-
-    return {
-        "RMSSD": rmssd,
-        "pNN50": pnn50,
-        "SD1": sd1,
-        "LF_Power": lf_power,
-        "HF_Power": hf_power,
-        "DFA_alpha1": dfa_alpha1,
-    }
-
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:
@@ -227,7 +223,6 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
 
         hrv = calculate_hrv_metrics(rr_intervals_trimmed)
 
-        # Return trimmed CSV in single-column format
         csv_buf = io.StringIO()
         pd.DataFrame({
             "Combined": [f"{t:.6f},{v:.12f}" for t, v in zip(trimmed_time, trimmed_voltage)]
@@ -254,4 +249,3 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-

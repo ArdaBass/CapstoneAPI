@@ -183,22 +183,8 @@ def calculate_hrv_metrics(rr_intervals):
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:
-        # Detect whether it's single-column or two-column CSV
         raw = await file.read()
-        file.file.seek(0)
-        first_line = raw.splitlines()[0].decode("utf-8")
-        delimiter = ";" if ";" in first_line else ","
-
-        if len(first_line.split(delimiter)) == 1:
-            # single-column, split value
-            df = pd.read_csv(io.BytesIO(raw), header=None, names=["Combined"], sep=delimiter)
-            df = df["Combined"].str.split(",", expand=True)
-            df.columns = ["Time (s)", "Voltage (mV)"]
-        else:
-            df = pd.read_csv(io.BytesIO(raw), delimiter=delimiter)
-            df.columns = ["Time (s)", "Voltage (mV)"]
-
-        df = df.astype(float)
+        df = parse_ecg_flexible(raw)
 
         time = df["Time (s)"].values
         voltage = df["Voltage (mV)"].values * 1000
@@ -208,8 +194,7 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         threshold = np.mean(filtered) + 1.8 * np.std(filtered)
         peaks, _ = find_peaks(filtered, height=threshold, distance=60, prominence=150)
 
-        true_peaks = []
-        true_peak_times = []
+        true_peaks, true_peak_times = [], []
         if len(peaks):
             true_peaks.append(peaks[0])
             true_peak_times.append(time[peaks[0]])
@@ -242,7 +227,7 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
 
         hrv = calculate_hrv_metrics(rr_intervals_trimmed)
 
-        # Create CSV in original format
+        # Return trimmed CSV in single-column format
         csv_buf = io.StringIO()
         pd.DataFrame({
             "Combined": [f"{t:.6f},{v:.12f}" for t, v in zip(trimmed_time, trimmed_voltage)]
@@ -269,3 +254,4 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+

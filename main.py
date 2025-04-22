@@ -388,5 +388,30 @@ async def rename_folder(folder_id: int, new_name: str = Form(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/folders/{folder_id}")
+async def delete_folder(folder_id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Check if folder exists
+        cursor.execute("SELECT COUNT(*) FROM Folders WHERE Id = %s", (folder_id,))
+        if cursor.fetchone()[0] == 0:
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+        # Optional: Check and delete subfolders and files recursively if needed
+        # For now, we'll assume the frontend prevents deletion of non-empty folders
+
+        # Delete folder
+        cursor.execute("DELETE FROM Folders WHERE Id = %s", (folder_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return {"message": "Folder deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 

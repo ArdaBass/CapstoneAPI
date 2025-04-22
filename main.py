@@ -340,4 +340,53 @@ async def delete_file(file_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.put("/files/{file_id}/rename")
+async def rename_file(file_id: int, new_name: str = Form(...)):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT FilePath FROM Files WHERE Id = %s", (file_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        old_blob_path = row[0]
+        file_ext = os.path.splitext(old_blob_path)[1]
+        new_blob_path = f"{uuid.uuid4().hex}{file_ext}"
+
+        # Copy blob to new name
+        old_blob = container_client.get_blob_client(old_blob_path)
+        new_blob = container_client.get_blob_client(new_blob_path)
+        new_blob.start_copy_from_url(old_blob.url)
+        old_blob.delete_blob()
+
+        # Update DB
+        cursor.execute(
+            "UPDATE Files SET FileName = %s, FilePath = %s WHERE Id = %s",
+            (new_name, new_blob_path, file_id)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return {"message": "File renamed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/folders/{folder_id}")
+async def rename_folder(folder_id: int, new_name: str = Form(...)):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Folders SET Name = %s WHERE Id = %s", (new_name, folder_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "Folder renamed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 

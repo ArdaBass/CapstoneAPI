@@ -17,7 +17,7 @@ from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 
 # ---------------- Azure Setup ----------------
-AZURE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=hrvstoragearda;AccountKey=YOUR_KEY;EndpointSuffix=core.windows.net"
+AZURE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=hrvstoragearda;AccountKey=PC3HHRI4bnsph1dHH96K4t8UyE6Z6nM7Uvgw1AiNVmsQ76DxDuMC+/tkz88nWq1xXmVt2BN+hRjP+AStzuAmEQ==;EndpointSuffix=core.windows.net"
 AZURE_CONTAINER = "capstone-files"
 blob_service = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
 container_client = blob_service.get_container_client(AZURE_CONTAINER)
@@ -92,32 +92,6 @@ def get_folders():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/folders/{folder_id}")
-async def rename_folder(folder_id: int, new_name: str = Form(...)):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE Folders SET Name = %s WHERE Id = %s", (new_name, folder_id))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return {"message": "Folder renamed successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/files/{file_id}/rename")
-async def rename_file(file_id: int, new_name: str = Form(...)):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE Files SET FileName = %s WHERE Id = %s", (new_name, file_id))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return {"message": "File renamed successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 # ---------------- File Upload ----------------
 @app.post("/upload-file")
 async def upload_file(file: UploadFile = File(...), folder_id: int = Form(...)):
@@ -154,19 +128,12 @@ def download_file(file_id: int):
         conn.close()
 
         if not row:
-            raise HTTPException(status_code=404, detail="File not found in database.")
+            raise HTTPException(status_code=404, detail="File not found")
 
         blob_path, filename = row
         blob_client = container_client.get_blob_client(blob_path)
-
-        try:
-            stream = blob_client.download_blob()
-        except Exception:
-            raise HTTPException(status_code=404, detail=f"Blob not found in Azure Storage: {blob_path}")
-
-        return StreamingResponse(stream.chunks(), media_type="text/csv", headers={
-            "Content-Disposition": f"attachment; filename={filename}"
-        })
+        stream = blob_client.download_blob()
+        return StreamingResponse(stream.chunks(), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -372,6 +339,5 @@ async def delete_file(file_id: int):
         return {"message": "File deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 

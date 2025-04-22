@@ -314,4 +314,31 @@ async def trim_and_save(file: UploadFile = File(...), start_index: int = Form(0)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.delete("/files/{file_id}")
+async def delete_file(file_id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT FilePath FROM Files WHERE Id = %s", (file_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        file_path = row[0]
+
+        # Delete from Azure Blob
+        blob_client = container_client.get_blob_client(file_path)
+        blob_client.delete_blob()
+
+        # Delete from DB
+        cursor.execute("DELETE FROM Files WHERE Id = %s", (file_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return {"message": "File deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 

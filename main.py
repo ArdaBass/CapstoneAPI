@@ -17,7 +17,7 @@ from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 
 # ---------------- Azure Setup ----------------
-AZURE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=hrvstoragearda;AccountKey=PC3HHRI4bnsph1dHH96K4t8UyE6Z6nM7Uvgw1AiNVmsQ76DxDuMC+/tkz88nWq1xXmVt2BN+hRjP+AStzuAmEQ==;EndpointSuffix=core.windows.net"
+AZURE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=hrvstoragearda;AccountKey=YOUR_KEY;EndpointSuffix=core.windows.net"
 AZURE_CONTAINER = "capstone-files"
 blob_service = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
 container_client = blob_service.get_container_client(AZURE_CONTAINER)
@@ -91,6 +91,33 @@ def get_folders():
         return folders
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/folders/{folder_id}")
+async def rename_folder(folder_id: int, new_name: str = Form(...)):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Folders SET Name = %s WHERE Id = %s", (new_name, folder_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "Folder renamed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/files/{file_id}/rename")
+async def rename_file(file_id: int, new_name: str = Form(...)):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Files SET FileName = %s WHERE Id = %s", (new_name, file_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "File renamed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ---------------- File Upload ----------------
 @app.post("/upload-file")

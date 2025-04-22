@@ -118,7 +118,6 @@ async def rename_file(file_id: int, new_name: str = Form(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ---------------- File Upload ----------------
 @app.post("/upload-file")
 async def upload_file(file: UploadFile = File(...), folder_id: int = Form(...)):
@@ -155,12 +154,19 @@ def download_file(file_id: int):
         conn.close()
 
         if not row:
-            raise HTTPException(status_code=404, detail="File not found")
+            raise HTTPException(status_code=404, detail="File not found in database.")
 
         blob_path, filename = row
         blob_client = container_client.get_blob_client(blob_path)
-        stream = blob_client.download_blob()
-        return StreamingResponse(stream.chunks(), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+        try:
+            stream = blob_client.download_blob()
+        except Exception:
+            raise HTTPException(status_code=404, detail=f"Blob not found in Azure Storage: {blob_path}")
+
+        return StreamingResponse(stream.chunks(), media_type="text/csv", headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

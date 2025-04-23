@@ -15,6 +15,8 @@ import os
 import uuid
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
+from pydantic import BaseModel
+
 
 # ---------------- Azure Setup ----------------
 AZURE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=hrvstoragearda;AccountKey=PC3HHRI4bnsph1dHH96K4t8UyE6Z6nM7Uvgw1AiNVmsQ76DxDuMC+/tkz88nWq1xXmVt2BN+hRjP+AStzuAmEQ==;EndpointSuffix=core.windows.net"
@@ -412,9 +414,17 @@ async def delete_folder(folder_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+class MergeRequest(BaseModel):
+    folder_id: int
+
 @app.post("/merge-files")
-async def merge_files(folder_id: int = Form(...)):
+async def merge_files(request: MergeRequest):
+    folder_id = request.folder_id  # <-- this line was wrongly indented
+
     try:
+        
+
         # Fetch file paths from DB
         conn = get_db_connection()
         cursor = conn.cursor()

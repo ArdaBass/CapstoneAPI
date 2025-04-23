@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -412,6 +412,39 @@ async def delete_folder(folder_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/merge-csvs")
+async def merge_csvs(files: List[UploadFile] = File(...)):
+    try:
+        merged_df = None
+        total_time_offset = 0.0
+
+        for idx, file in enumerate(files):
+            content = await file.read()
+            df = pd.read_csv(io.StringIO(content.decode()), delimiter=";", skiprows=[1] if idx == 0 else [], decimal=",")
+            df.columns = ["Time", "Voltage"]
+            df = df.astype(float)
+
+            if merged_df is None:
+                merged_df = df
+                total_time_offset = df["Time"].iloc[-1] + (df["Time"].iloc[1] - df["Time"].iloc[0])
+            else:
+                df["Time"] += total_time_offset
+                total_time_offset = df["Time"].iloc[-1] + (df["Time"].iloc[1] - df["Time"].iloc[0])
+                merged_df = pd.concat([merged_df, df], ignore_index=True)
+
+        # Convert merged DataFrame to CSV content
+        output_csv = io.StringIO()
+        output_csv.write("Time;Voltage\n")
+        for _, row in merged_df.iterrows():
+            output_csv.write(f"{row['Time']:.6f};{row['Voltage']:.9f}\n")
+
+        output_bytes = output_csv.getvalue().encode("utf-8")
+        return StreamingResponse(io.BytesIO(output_bytes), media_type="text/csv", headers={
+            "Content-Disposition": "attachment; filename=merged_ecg.csv"
+        })
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 

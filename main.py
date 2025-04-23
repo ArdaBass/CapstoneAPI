@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -419,11 +419,12 @@ class MergeRequest(BaseModel):
     folder_id: int
 
 @app.post("/merge-files")
-async def merge_files(request: MergeRequest):
-    folder_id = request.folder_id  # <-- this line was wrongly indented
-
+async def merge_files(request: Request):
     try:
-        
+        data = await request.json()
+        folder_id = data.get("folder_id")
+        if folder_id is None:
+            raise HTTPException(status_code=400, detail="Missing folder_id in request")
 
         # Fetch file paths from DB
         conn = get_db_connection()

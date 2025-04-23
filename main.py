@@ -423,16 +423,27 @@ async def merge_files(folder_id: int = Form(...)):
         cursor.close()
         conn.close()
 
+        if not file_rows:
+            raise HTTPException(status_code=400, detail="No files found in the selected folder.")
+
         merged_df = None
         total_time_offset = 0.0
 
         for idx, row in enumerate(file_rows):
             blob_path = row[0]
             blob_client = container_client.get_blob_client(blob_path)
-            content = await blob_client.download_blob().readall()
-            df = pd.read_csv(io.StringIO(content.decode("utf-8")), delimiter=";", skiprows=[1] if idx == 0 else [], decimal=",")
-            df.columns = ["Time", "Voltage"]
-            df = df.astype(float)
+
+            try:
+                content = await blob_client.download_blob().readall()
+            except Exception as blob_err:
+                raise HTTPException(status_code=500, detail=f"Failed to read blob: {blob_path}. Error: {blob_err}")
+
+            try:
+                df = pd.read_csv(io.StringIO(content.decode("utf-8")), delimiter=";", skiprows=[1] if idx == 0 else [], decimal=",")
+                df.columns = ["Time", "Voltage"]
+                df = df.astype(float)
+            except Exception as parse_err:
+                raise HTTPException(status_code=500, detail=f"CSV parse error in {blob_path}: {parse_err}")
 
             if merged_df is None:
                 merged_df = df
@@ -452,8 +463,10 @@ async def merge_files(folder_id: int = Form(...)):
             "Content-Disposition": "attachment; filename=merged_ecg.csv"
         })
 
+    except HTTPException as he:
+        raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Unexpected server error: {e}")
 
 
 

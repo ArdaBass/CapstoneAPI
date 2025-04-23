@@ -412,15 +412,25 @@ async def delete_folder(folder_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/merge-csvs")
-async def merge_csvs(files: List[UploadFile] = File(...)):
+@app.post("/merge-files")
+async def merge_files(folder_id: int = Form(...)):
     try:
+        # Fetch file paths from DB
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT FilePath FROM Files WHERE FolderId = %s", (folder_id,))
+        file_rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
         merged_df = None
         total_time_offset = 0.0
 
-        for idx, file in enumerate(files):
-            content = await file.read()
-            df = pd.read_csv(io.StringIO(content.decode()), delimiter=";", skiprows=[1] if idx == 0 else [], decimal=",")
+        for idx, row in enumerate(file_rows):
+            blob_path = row[0]
+            blob_client = container_client.get_blob_client(blob_path)
+            content = await blob_client.download_blob().readall()
+            df = pd.read_csv(io.StringIO(content.decode("utf-8")), delimiter=";", skiprows=[1] if idx == 0 else [], decimal=",")
             df.columns = ["Time", "Voltage"]
             df = df.astype(float)
 
@@ -432,7 +442,6 @@ async def merge_csvs(files: List[UploadFile] = File(...)):
                 total_time_offset = df["Time"].iloc[-1] + (df["Time"].iloc[1] - df["Time"].iloc[0])
                 merged_df = pd.concat([merged_df, df], ignore_index=True)
 
-        # Convert merged DataFrame to CSV content
         output_csv = io.StringIO()
         output_csv.write("Time;Voltage\n")
         for _, row in merged_df.iterrows():
@@ -444,7 +453,7 @@ async def merge_csvs(files: List[UploadFile] = File(...)):
         })
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 

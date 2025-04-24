@@ -424,20 +424,22 @@ async def merge_files(request: Request):
         print("🔍 Received merge-files request")
 
         data = await request.json()
-        print("📦 Parsed JSON data:", data)
-
         folder_id = data.get("folder_id")
         if folder_id is None:
             raise HTTPException(status_code=400, detail="Missing folder_id in request")
-        print("📁 folder_id:", folder_id)
 
-        # Fetch file paths from DB
+        # Fetch folder name
         conn = get_db_connection()
         cursor = conn.cursor()
+        cursor.execute("SELECT Name FROM Folders WHERE Id = %s", (folder_id,))
+        folder_row = cursor.fetchone()
+        if not folder_row:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        folder_name = folder_row[0].replace(" ", "_").lower()
+
+        # Fetch all files in the folder
         cursor.execute("SELECT FilePath FROM Files WHERE FolderId = %s", (folder_id,))
         file_rows = cursor.fetchall()
-        print(f"📂 Found {len(file_rows)} files in folder {folder_id}")
-
         cursor.close()
         conn.close()
 
@@ -447,20 +449,17 @@ async def merge_files(request: Request):
         merged_df = None
         total_time_offset = 0.0
 
-        for idx, row in enumerate(file_rows):
+        for row in file_rows:
             blob_path = row[0]
-            print(f"⬇️ Reading blob: {blob_path}")
             blob_client = container_client.get_blob_client(blob_path)
-
             try:
                 content = blob_client.download_blob().readall()
-                decoded_text = content.decode("utf-8").replace(",", ".")  # 🔧 Convert commas to dots
+                decoded_text = content.decode("utf-8").replace(",", ".")  # Convert commas to dots
                 df = pd.read_csv(io.StringIO(decoded_text), delimiter=";", skiprows=1)
                 df.columns = ["Time", "Voltage"]
                 df = df.astype(float)
-            except Exception as parse_err:
-                print(f"❌ CSV parse error in {blob_path}: {parse_err}")
-                raise HTTPException(status_code=500, detail=f"CSV parse error in {blob_path}: {parse_err}")
+            except Exception as err:
+                raise HTTPException(status_code=500, detail=f"Failed to process blob {blob_path}: {err}")
 
             if merged_df is None:
                 merged_df = df
@@ -470,16 +469,35 @@ async def merge_files(request: Request):
                 total_time_offset = df["Time"].iloc[-1] + (df["Time"].iloc[1] - df["Time"].iloc[0])
                 merged_df = pd.concat([merged_df, df], ignore_index=True)
 
+        # Write merged CSV to memory
         output_csv = io.StringIO()
         output_csv.write("Time;Voltage\n")
         for _, row in merged_df.iterrows():
             output_csv.write(f"{row['Time']:.6f};{row['Voltage']:.9f}\n")
-
         output_bytes = output_csv.getvalue().encode("utf-8")
-        print("✅ Merge complete — sending file")
+
+        # Define merged filename
+        merged_filename = f"merged_{folder_name}.csv"
+
+        # Upload to Azure
+        blob_client = container_client.get_blob_client(merged_filename)
+        blob_client.upload_blob(output_bytes, overwrite=True)
+
+        # Insert metadata into DB
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO Files (FolderId, FileName, FilePath, UploadedAt) VALUES (%s, %s, %s, %s)",
+            (folder_id, merged_filename, merged_filename, datetime.utcnow())
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        print("✅ Merge complete — sending file and saving metadata")
 
         return StreamingResponse(io.BytesIO(output_bytes), media_type="text/csv", headers={
-            "Content-Disposition": "attachment; filename=merged_ecg.csv"
+            "Content-Disposition": f"attachment; filename={merged_filename}"
         })
 
     except HTTPException as he:

@@ -248,16 +248,20 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
             "image": encoded_image,
             "hrvMetrics": hrv,
             "rrTable": [
-                {"timestamp": true_peak_times_trimmed[i], "rr": None if i == 0 else rr_intervals_trimmed[i - 1]}
+                {
+                    "timestamp": float(true_peak_times_trimmed[i]),
+                    "rr": None if i == 0 else float(rr_intervals_trimmed[i - 1])
+                }
                 for i in range(len(true_peak_times_trimmed))
             ],
-            "trimmedTime": trimmed_time.tolist(),        # NEW
-            "trimmedVoltage": trimmed_voltage.tolist(),  # NEW
-            "truePeaks": true_peaks_trimmed              # NEW
+            "trimmedTime": trimmed_time.tolist(),
+            "trimmedVoltage": trimmed_voltage.tolist(),
+            "truePeaks": [int(i) for i in true_peaks_trimmed]  # <-- key fix here
         }
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.post("/trim-and-save")
 async def trim_and_save(file: UploadFile = File(...), start_index: int = Form(0), folder_id: int = Form(...)):

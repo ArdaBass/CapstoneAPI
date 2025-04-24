@@ -453,7 +453,7 @@ async def merge_files(request: Request):
             blob_client = container_client.get_blob_client(blob_path)
 
             try:
-                content = await blob_client.download_blob().readall()
+                content = blob_client.download_blob().readall()
             except Exception as blob_err:
                 print(f"❌ Failed to read blob {blob_path}: {blob_err}")
                 raise HTTPException(status_code=500, detail=f"Failed to read blob: {blob_path}. Error: {blob_err}")

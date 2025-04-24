@@ -190,10 +190,11 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         df = df.astype(float)
 
         time = df["Time (s)"].values
-        voltage = df["Voltage (mV)"].values * 1000
+        voltage = df["Voltage (mV)"].values * 1000  # Convert to µV
         filtered = butter_bandpass_filter(voltage)
         filtered = np.clip(filtered, -600, 600)
 
+        # Initial peak detection
         threshold = np.mean(filtered) + 1.8 * np.std(filtered)
         peaks, _ = find_peaks(filtered, height=threshold, distance=60, prominence=150)
 
@@ -216,6 +217,7 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         trimmed_time = time[mask] - start_time
         trimmed_voltage = filtered[mask]
 
+        # Peak detection on trimmed signal
         t_peaks, _ = find_peaks(trimmed_voltage, height=np.mean(trimmed_voltage) + 1.8 * np.std(trimmed_voltage), distance=60, prominence=150)
         true_peaks_trimmed, rr_intervals_trimmed, true_peak_times_trimmed = [], [], []
 
@@ -231,6 +233,7 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
 
         hrv = calculate_hrv_metrics(rr_intervals_trimmed)
 
+        # Optional static image
         buf = io.BytesIO()
         plt.figure(figsize=(12, 5))
         plt.plot(trimmed_time, trimmed_voltage, color='blue')
@@ -247,8 +250,12 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
             "rrTable": [
                 {"timestamp": true_peak_times_trimmed[i], "rr": None if i == 0 else rr_intervals_trimmed[i - 1]}
                 for i in range(len(true_peak_times_trimmed))
-            ]
+            ],
+            "trimmedTime": trimmed_time.tolist(),        # NEW
+            "trimmedVoltage": trimmed_voltage.tolist(),  # NEW
+            "truePeaks": true_peaks_trimmed              # NEW
         }
+
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -421,16 +421,23 @@ class MergeRequest(BaseModel):
 @app.post("/merge-files")
 async def merge_files(request: Request):
     try:
+        print("🔍 Received merge-files request")
+
         data = await request.json()
+        print("📦 Parsed JSON data:", data)
+
         folder_id = data.get("folder_id")
         if folder_id is None:
             raise HTTPException(status_code=400, detail="Missing folder_id in request")
+        print("📁 folder_id:", folder_id)
 
         # Fetch file paths from DB
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT FilePath FROM Files WHERE FolderId = %s", (folder_id,))
         file_rows = cursor.fetchall()
+        print(f"📂 Found {len(file_rows)} files in folder {folder_id}")
+
         cursor.close()
         conn.close()
 
@@ -442,18 +449,26 @@ async def merge_files(request: Request):
 
         for idx, row in enumerate(file_rows):
             blob_path = row[0]
+            print(f"⬇️ Reading blob: {blob_path}")
             blob_client = container_client.get_blob_client(blob_path)
 
             try:
                 content = await blob_client.download_blob().readall()
             except Exception as blob_err:
+                print(f"❌ Failed to read blob {blob_path}: {blob_err}")
                 raise HTTPException(status_code=500, detail=f"Failed to read blob: {blob_path}. Error: {blob_err}")
 
             try:
-                df = pd.read_csv(io.StringIO(content.decode("utf-8")), delimiter=";", skiprows=[1] if idx == 0 else [], decimal=",")
+                df = pd.read_csv(
+                    io.StringIO(content.decode("utf-8")),
+                    delimiter=";",        # matches your CSV format
+                    skiprows=1,           # skip header
+                    decimal="."           # dot as decimal
+                )
                 df.columns = ["Time", "Voltage"]
                 df = df.astype(float)
             except Exception as parse_err:
+                print(f"❌ CSV parse error in {blob_path}: {parse_err}")
                 raise HTTPException(status_code=500, detail=f"CSV parse error in {blob_path}: {parse_err}")
 
             if merged_df is None:
@@ -470,14 +485,15 @@ async def merge_files(request: Request):
             output_csv.write(f"{row['Time']:.6f};{row['Voltage']:.9f}\n")
 
         output_bytes = output_csv.getvalue().encode("utf-8")
+        print("✅ Merge complete — sending file")
+
         return StreamingResponse(io.BytesIO(output_bytes), media_type="text/csv", headers={
             "Content-Disposition": "attachment; filename=merged_ecg.csv"
         })
 
     except HTTPException as he:
+        print(f"🚨 HTTPException: {he.detail}")
         raise he
     except Exception as e:
+        print(f"🔥 Unexpected server error: {e}")
         raise HTTPException(status_code=500, detail=f"Unexpected server error: {e}")
-
-
-

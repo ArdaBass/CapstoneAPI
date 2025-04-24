@@ -417,16 +417,13 @@ async def delete_folder(folder_id: int):
 
 class MergeRequest(BaseModel):
     folder_id: int
+    file_ids: List[int]
 
 @app.post("/merge-files")
-async def merge_files(request: Request):
+async def merge_files(data: MergeRequest):
     try:
-        print("🔍 Received merge-files request")
-
-        data = await request.json()
-        folder_id = data.get("folder_id")
-        if folder_id is None:
-            raise HTTPException(status_code=400, detail="Missing folder_id in request")
+        folder_id = data.folder_id
+        file_ids = data.file_ids
 
         # Fetch folder name
         conn = get_db_connection()
@@ -437,29 +434,25 @@ async def merge_files(request: Request):
             raise HTTPException(status_code=404, detail="Folder not found")
         folder_name = folder_row[0].replace(" ", "_").lower()
 
-        # Fetch all files in the folder
-        cursor.execute("SELECT FilePath FROM Files WHERE FolderId = %s", (folder_id,))
-        file_rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-
-        if not file_rows:
-            raise HTTPException(status_code=400, detail="No files found in the selected folder.")
-
         merged_df = None
         total_time_offset = 0.0
 
-        for row in file_rows:
+        for file_id in file_ids:
+            cursor.execute("SELECT FilePath FROM Files WHERE Id = %s AND FolderId = %s", (file_id, folder_id))
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"File ID {file_id} not found in folder {folder_id}")
             blob_path = row[0]
             blob_client = container_client.get_blob_client(blob_path)
+
             try:
                 content = blob_client.download_blob().readall()
-                decoded_text = content.decode("utf-8").replace(",", ".")  # Convert commas to dots
+                decoded_text = content.decode("utf-8").replace(",", ".")
                 df = pd.read_csv(io.StringIO(decoded_text), delimiter=";", skiprows=1)
                 df.columns = ["Time", "Voltage"]
                 df = df.astype(float)
             except Exception as err:
-                raise HTTPException(status_code=500, detail=f"Failed to process blob {blob_path}: {err}")
+                raise HTTPException(status_code=500, detail=f"Error reading or parsing {blob_path}: {err}")
 
             if merged_df is None:
                 merged_df = df
@@ -469,23 +462,19 @@ async def merge_files(request: Request):
                 total_time_offset = df["Time"].iloc[-1] + (df["Time"].iloc[1] - df["Time"].iloc[0])
                 merged_df = pd.concat([merged_df, df], ignore_index=True)
 
-        # Write merged CSV to memory
+        # Write merged CSV
         output_csv = io.StringIO()
         output_csv.write("Time;Voltage\n")
         for _, row in merged_df.iterrows():
             output_csv.write(f"{row['Time']:.6f};{row['Voltage']:.9f}\n")
         output_bytes = output_csv.getvalue().encode("utf-8")
 
-        # Define merged filename
+        # Save to Azure
         merged_filename = f"merged_{folder_name}.csv"
-
-        # Upload to Azure
         blob_client = container_client.get_blob_client(merged_filename)
         blob_client.upload_blob(output_bytes, overwrite=True)
 
-        # Insert metadata into DB
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        # Save metadata to DB
         cursor.execute(
             "INSERT INTO Files (FolderId, FileName, FilePath, UploadedAt) VALUES (%s, %s, %s, %s)",
             (folder_id, merged_filename, merged_filename, datetime.utcnow())
@@ -494,16 +483,14 @@ async def merge_files(request: Request):
         cursor.close()
         conn.close()
 
-        print("✅ Merge complete — sending file and saving metadata")
-
-        return StreamingResponse(io.BytesIO(output_bytes), media_type="text/csv", headers={
-            "Content-Disposition": f"attachment; filename={merged_filename}"
-        })
+        return {
+            "message": "Merged file created and saved successfully.",
+            "filename": merged_filename
+        }
 
     except HTTPException as he:
-        print(f"🚨 HTTPException: {he.detail}")
         raise he
     except Exception as e:
-        print(f"🔥 Unexpected server error: {e}")
         raise HTTPException(status_code=500, detail=f"Unexpected server error: {e}")
+
 

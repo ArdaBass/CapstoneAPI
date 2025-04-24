@@ -454,17 +454,8 @@ async def merge_files(request: Request):
 
             try:
                 content = blob_client.download_blob().readall()
-            except Exception as blob_err:
-                print(f"❌ Failed to read blob {blob_path}: {blob_err}")
-                raise HTTPException(status_code=500, detail=f"Failed to read blob: {blob_path}. Error: {blob_err}")
-
-            try:
-                df = pd.read_csv(
-                    io.StringIO(content.decode("utf-8")),
-                    delimiter=";",        # matches your CSV format
-                    skiprows=1,           # skip header
-                    decimal="."           # dot as decimal
-                )
+                decoded_text = content.decode("utf-8").replace(",", ".")  # 🔧 Convert commas to dots
+                df = pd.read_csv(io.StringIO(decoded_text), delimiter=";", skiprows=1)
                 df.columns = ["Time", "Voltage"]
                 df = df.astype(float)
             except Exception as parse_err:
@@ -497,3 +488,4 @@ async def merge_files(request: Request):
     except Exception as e:
         print(f"🔥 Unexpected server error: {e}")
         raise HTTPException(status_code=500, detail=f"Unexpected server error: {e}")
+

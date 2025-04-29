@@ -10,7 +10,7 @@ from scipy.signal import butter, filtfilt, find_peaks
 from scipy.fftpack import fft
 import base64
 import io
-import pymssql
+import psycopg2
 import os
 import uuid
 from datetime import datetime
@@ -40,12 +40,9 @@ app.add_middleware(
 
 # ---------------- pymssql DB Connection ----------------
 def get_db_connection():
-    return pymssql.connect(
-        server="aktekworkers.database.windows.net",
-        user="sqladmin",
-        password="nd1W594.",
-        database="capstone"
-    )
+    db_url = "postgresql://postgres:nd1W594.@db.xfoludtudmvoqhspvcpk.supabase.co:5432/postgres"
+    return psycopg2.connect(db_url)
+
 
 # ---------------- Models ----------------
 class FolderCreate(BaseModel):

@@ -9,3 +9,5 @@ nest-asyncio
 pymssql
 python-dotenv
 azure-storage-blob
+psycopg2-binary
+

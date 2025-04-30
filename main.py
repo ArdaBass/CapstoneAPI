@@ -185,16 +185,40 @@ def calculate_hrv_metrics(rr_intervals):
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:
+        # Read and parse ECG file
         df = pd.read_csv(file.file, delimiter=";", decimal=",", skiprows=[1])
         df.columns = ["Time (s)", "Voltage (mV)"]
         df = df.astype(float)
 
         time = df["Time (s)"].values
         voltage = df["Voltage (mV)"].values * 1000  # Convert to µV
-        filtered = butter_bandpass_filter(voltage)
-        filtered = np.clip(filtered, -600, 600)
 
-        # Initial peak detection
+        # --- Gentler filter
+        def butter_bandpass_filter(data, lowcut=0.05, highcut=45.0, fs=512, order=2):
+            nyquist = 0.5 * fs
+            low = lowcut / nyquist
+            high = highcut / nyquist
+            b, a = butter(order, [low, high], btype='band')
+            return filtfilt(b, a, data)
+
+        filtered = butter_bandpass_filter(voltage)
+
+        # --- Plot 1: Raw vs Filtered
+        buf1 = io.BytesIO()
+        plt.figure(figsize=(12, 4))
+        plt.plot(time, voltage, alpha=0.3, label="Raw")
+        plt.plot(time, filtered, alpha=0.8, label="Filtered")
+        plt.title("Raw vs Filtered ECG")
+        plt.xlabel("Time (s)")
+        plt.ylabel("Voltage (µV)")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(buf1, format="png")
+        plt.close()
+        buf1.seek(0)
+        image_raw_filtered = base64.b64encode(buf1.read()).decode("utf-8")
+
+        # --- Initial peak detection
         threshold = np.mean(filtered) + 1.8 * np.std(filtered)
         peaks, _ = find_peaks(filtered, height=threshold, distance=60, prominence=150)
 
@@ -212,12 +236,13 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         if start_index >= len(true_peaks):
             raise ValueError(f"Start index {start_index} is out of range.")
 
+        # --- Trim from selected peak
         start_time = time[true_peaks[start_index]]
         mask = time >= start_time
         trimmed_time = time[mask] - start_time
         trimmed_voltage = filtered[mask]
 
-        # Peak detection on trimmed signal
+        # --- Peak detection on trimmed signal
         t_peaks, _ = find_peaks(trimmed_voltage, height=np.mean(trimmed_voltage) + 1.8 * np.std(trimmed_voltage), distance=60, prominence=150)
         true_peaks_trimmed, rr_intervals_trimmed, true_peak_times_trimmed = [], [], []
 
@@ -231,21 +256,28 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
                     true_peak_times_trimmed.append(trimmed_time[t_peaks[i]])
                     rr_intervals_trimmed.append(rr)
 
+        # --- HRV Calculation
         hrv = calculate_hrv_metrics(rr_intervals_trimmed)
 
-        # Optional static image
-        buf = io.BytesIO()
-        plt.figure(figsize=(12, 5))
-        plt.plot(trimmed_time, trimmed_voltage, color='blue')
-        plt.scatter(trimmed_time[true_peaks_trimmed], trimmed_voltage[true_peaks_trimmed], color='red')
+        # --- Plot 2: Trimmed ECG with peaks
+        buf2 = io.BytesIO()
+        plt.figure(figsize=(12, 4))
+        plt.plot(trimmed_time, trimmed_voltage, label="Trimmed ECG", color="blue")
+        plt.scatter(trimmed_time[true_peaks_trimmed], trimmed_voltage[true_peaks_trimmed], color="red", label="Detected Peaks")
+        plt.title("Trimmed ECG with Detected Peaks")
+        plt.xlabel("Time (s)")
+        plt.ylabel("Voltage (µV)")
+        plt.legend()
         plt.tight_layout()
-        plt.savefig(buf, format="png")
+        plt.savefig(buf2, format="png")
         plt.close()
-        buf.seek(0)
-        encoded_image = base64.b64encode(buf.read()).decode("utf-8")
+        buf2.seek(0)
+        image_trimmed_peaks = base64.b64encode(buf2.read()).decode("utf-8")
 
+        # --- Response
         return {
-            "image": encoded_image,
+            "rawFilteredImage": image_raw_filtered,
+            "trimmedPeaksImage": image_trimmed_peaks,
             "hrvMetrics": hrv,
             "rrTable": [
                 {
@@ -256,7 +288,7 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
             ],
             "trimmedTime": trimmed_time.tolist(),
             "trimmedVoltage": trimmed_voltage.tolist(),
-            "truePeaks": [int(i) for i in true_peaks_trimmed]  # <-- key fix here
+            "truePeaks": [int(i) for i in true_peaks_trimmed]
         }
 
     except Exception as e:

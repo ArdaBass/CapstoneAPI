@@ -194,7 +194,7 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         filtered = butter_bandpass_filter(voltage)
         filtered = np.clip(filtered, -600, 600)
 
-        # Initial peak detection
+        # Initial peak detection on filtered data
         threshold = np.mean(filtered) + 1.8 * np.std(filtered)
         peaks, _ = find_peaks(filtered, height=threshold, distance=60, prominence=150)
 
@@ -216,8 +216,9 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         mask = time >= start_time
         trimmed_time = time[mask] - start_time
         trimmed_voltage = filtered[mask]
+        raw_voltage = voltage[mask]  # <--- new: unfiltered trimmed voltage
 
-        # Peak detection on trimmed signal
+        # Peak detection on trimmed filtered signal
         t_peaks, _ = find_peaks(trimmed_voltage, height=np.mean(trimmed_voltage) + 1.8 * np.std(trimmed_voltage), distance=60, prominence=150)
         true_peaks_trimmed, rr_intervals_trimmed, true_peak_times_trimmed = [], [], []
 
@@ -256,11 +257,13 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
             ],
             "trimmedTime": trimmed_time.tolist(),
             "trimmedVoltage": trimmed_voltage.tolist(),
-            "truePeaks": [int(i) for i in true_peaks_trimmed]  # <-- key fix here
+            "rawVoltage": raw_voltage.tolist(),  # <--- added return of raw signal
+            "truePeaks": [int(i) for i in true_peaks_trimmed]
         }
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 
 @app.post("/trim-and-save")

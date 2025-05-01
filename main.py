@@ -18,6 +18,8 @@ from azure.storage.blob import BlobServiceClient
 from pydantic import BaseModel
 
 
+
+
 # ---------------- Azure Setup ----------------
 AZURE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=hrvstoragearda;AccountKey=PC3HHRI4bnsph1dHH96K4t8UyE6Z6nM7Uvgw1AiNVmsQ76DxDuMC+/tkz88nWq1xXmVt2BN+hRjP+AStzuAmEQ==;EndpointSuffix=core.windows.net"
 AZURE_CONTAINER = "capstone-files"
@@ -53,6 +55,12 @@ class FolderCreate(BaseModel):
     parent_id: Optional[int] = None
 
 # ---------------- Folder Endpoints ----------------
+
+
+@app.get("/ping")
+def ping():
+    return {"status": "ok"}
+
 @app.post("/folders")
 def create_folder(folder: FolderCreate):
     try:

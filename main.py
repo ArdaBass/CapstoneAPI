@@ -57,9 +57,10 @@ class FolderCreate(BaseModel):
 # ---------------- Folder Endpoints ----------------
 
 
-@app.get("/ping")
-def ping():
+@app.head("/ping")
+def ping_head():
     return {"status": "ok"}
+
 
 @app.post("/folders")
 def create_folder(folder: FolderCreate):

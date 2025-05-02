@@ -171,16 +171,31 @@ def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
 
 def calculate_hrv_metrics(rr_intervals):
     rr = np.array(rr_intervals)
-    rmssd = np.sqrt(np.mean(np.diff(rr) ** 2)) if len(rr) > 1 else None
-    pnn50 = np.sum(np.abs(np.diff(rr)) > 0.05) / len(rr) * 100 if len(rr) > 1 else None
-    sd1 = np.std(rr) / np.sqrt(2) if len(rr) > 1 else None
-    lf_power = hf_power = None
-    if len(rr) > 1:
-        rr_fft = np.abs(fft(rr - np.mean(rr)))[:len(rr)//2]
-        freqs = np.fft.fftfreq(len(rr), d=np.mean(rr))[:len(rr)//2]
-        lf_power = np.sum(rr_fft[(freqs >= 0.04) & (freqs < 0.15)])
-        hf_power = np.sum(rr_fft[(freqs >= 0.15) & (freqs < 0.4)])
-    dfa_alpha1 = np.std(np.log(rr)) if len(rr) > 1 else None
+    
+    if len(rr) < 2:
+        return {
+            "RMSSD": None,
+            "pNN50": None,
+            "SD1": None,
+            "LF_Power": None,
+            "HF_Power": None,
+            "DFA_alpha1": None,
+        }
+
+    # Time-domain
+    rmssd = np.sqrt(np.mean(np.diff(rr) ** 2))
+    pnn50 = np.sum(np.abs(np.diff(rr)) > 0.05) / (len(rr) - 1) * 100
+    sd1 = np.sqrt(np.var(np.diff(rr)) / 2)
+    
+    # Frequency-domain (approximate)
+    rr_detrended = rr - np.mean(rr)
+    rr_fft = np.abs(fft(rr_detrended))[:len(rr)//2]
+    freqs = np.fft.fftfreq(len(rr), d=np.mean(rr))[:len(rr)//2]
+    lf_power = np.sum(rr_fft[(freqs >= 0.04) & (freqs < 0.15)])
+    hf_power = np.sum(rr_fft[(freqs >= 0.15) & (freqs < 0.4)])
+    
+    # Nonlinear
+    dfa_alpha1 = np.std(np.log(rr))  # Simple proxy
 
     return {
         "RMSSD": rmssd,
@@ -190,6 +205,7 @@ def calculate_hrv_metrics(rr_intervals):
         "HF_Power": hf_power,
         "DFA_alpha1": dfa_alpha1,
     }
+
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):

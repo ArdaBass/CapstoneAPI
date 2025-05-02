@@ -62,6 +62,66 @@ def ping_head():
     return {"status": "ok"}
 
 
+@app.post("/import-participants")
+async def import_participants(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents))
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        added = 0
+        for i, row in df.iterrows():
+            person_id = int(i + 1)
+            name = str(row["Full Name"]).strip()
+
+            # Check if already exists by ID or Name
+            cursor.execute("SELECT COUNT(*) FROM Participants WHERE Id = %s OR Name = %s", (person_id, name))
+            if cursor.fetchone()[0] > 0:
+                continue
+
+            cursor.execute("""
+                INSERT INTO Participants (
+                    Id, Name, Age, Stress, SleepHours, SmokingStatus,
+                    CaffeineToday, CaffeineDetails, Alcohol, PhysicalActivity,
+                    ActivityDetails, Medication, MedicationName,
+                    CardioIssues, CardioIssuesName, Rested5Min,
+                    RecentIllness, IllnessExplanation
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                person_id,
+                name,
+                int(row["Age"]),
+                int(row["Current Stress Level (1–10):"]),
+                float(row["Sleep Duration Last Night (hours):"]),
+                str(row["Smoking Status:"] or ""),
+                str(row.get("Caffeine intake today", "")),
+                str(row.get("\u00a0Amount and Time", "")),  # non-breaking space
+                str(row.get("Alcohol Intake (Last 24h):", "")),
+                str(row.get("Physical Activity Before Test:", "")),
+                str(row.get("Type and Time", "")),
+                str(row.get("Medication", "")),
+                str(row.get("Medication Name", "")),
+                str(row.get("Known Cardiovascular Issues", "")),
+                str(row.get("Cardiovascular Issues name", "")),
+                str(row.get("Resting for 5 Minutes Before Test:", "")),
+                str(row.get("Recent Illnesses (past 2 weeks):", "")),
+                str(row.get("Please explain", ""))
+            ))
+
+            added += 1
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return {"message": f"{added} new participants added to Azure SQL."}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Import failed: {e}")
+
+
+
 @app.post("/folders")
 def create_folder(folder: FolderCreate):
     try:

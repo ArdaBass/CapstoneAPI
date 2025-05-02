@@ -68,18 +68,27 @@ async def import_participants(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents))
 
+        # Normalize headers
+        df.columns = [col.strip().lower().replace("\u00a0", " ") for col in df.columns]
+
         conn = get_db_connection()
         cursor = conn.cursor()
-
         added = 0
+
         for i, row in df.iterrows():
             person_id = int(i + 1)
-            name = str(row["Full Name"]).strip()
+            name = str(row.get("full name", "")).strip()
 
-            # Check if already exists by ID or Name
+            # Skip if name is empty
+            if not name:
+                continue
+
             cursor.execute("SELECT COUNT(*) FROM Participants WHERE Id = %s OR Name = %s", (person_id, name))
             if cursor.fetchone()[0] > 0:
                 continue
+
+            def safe_get(col):
+                return row.get(col, "")
 
             cursor.execute("""
                 INSERT INTO Participants (
@@ -92,22 +101,22 @@ async def import_participants(file: UploadFile = File(...)):
             """, (
                 person_id,
                 name,
-                int(row["Age"]),
-                int(row["Current Stress Level (1–10):"]),
-                float(row["Sleep Duration Last Night (hours):"]),
-                str(row["Smoking Status:"] or ""),
-                str(row.get("Caffeine intake today", "")),
-                str(row.get("\u00a0Amount and Time", "")),  # non-breaking space
-                str(row.get("Alcohol Intake (Last 24h):", "")),
-                str(row.get("Physical Activity Before Test:", "")),
-                str(row.get("Type and Time", "")),
-                str(row.get("Medication", "")),
-                str(row.get("Medication Name", "")),
-                str(row.get("Known Cardiovascular Issues", "")),
-                str(row.get("Cardiovascular Issues name", "")),
-                str(row.get("Resting for 5 Minutes Before Test:", "")),
-                str(row.get("Recent Illnesses (past 2 weeks):", "")),
-                str(row.get("Please explain", ""))
+                int(safe_get("age")),
+                int(safe_get("current stress level (1–10):")),
+                float(safe_get("sleep duration last night (hours):")),
+                str(safe_get("smoking status:")),
+                str(safe_get("caffeine intake today")),
+                str(safe_get("amount and time")),
+                str(safe_get("alcohol intake (last 24h):")),
+                str(safe_get("physical activity before test:")),
+                str(safe_get("type and time")),
+                str(safe_get("medication")),
+                str(safe_get("medication name")),
+                str(safe_get("known cardiovascular issues")),
+                str(safe_get("cardiovascular issues name")),
+                str(safe_get("resting for 5 minutes before test:")),
+                str(safe_get("recent illnesses (past 2 weeks):")),
+                str(safe_get("please explain"))
             ))
 
             added += 1

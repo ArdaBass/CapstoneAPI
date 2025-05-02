@@ -200,23 +200,22 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
 
         time = df["Time (s)"].values
         voltage = df["Voltage (mV)"].values * 1000  # Convert to µV
-        filtered = butter_bandpass_filter(voltage)
+        fs = round(1 / np.mean(np.diff(time)))  # Sampling frequency
+        filtered = butter_bandpass_filter(voltage, fs=fs)
         filtered = np.clip(filtered, -600, 600)
 
-        # Initial peak detection on filtered data
+        # Initial detection to find start index
         threshold = np.mean(filtered) + 1.8 * np.std(filtered)
-        peaks, _ = find_peaks(filtered, height=threshold, distance=60, prominence=150)
+        min_distance = int(0.3 * fs)
+        peaks, _ = find_peaks(filtered, height=threshold, distance=min_distance, prominence=150)
 
         true_peaks = []
-        true_peak_times = []
         if len(peaks):
             true_peaks.append(peaks[0])
-            true_peak_times.append(time[peaks[0]])
             for i in range(1, len(peaks)):
                 rr = time[peaks[i]] - time[true_peaks[-1]]
                 if 0.3 < rr < 1.5:
                     true_peaks.append(peaks[i])
-                    true_peak_times.append(time[peaks[i]])
 
         if start_index >= len(true_peaks):
             raise ValueError(f"Start index {start_index} is out of range.")
@@ -224,30 +223,41 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         start_time = time[true_peaks[start_index]]
         mask = time >= start_time
         trimmed_time = time[mask] - start_time
-        trimmed_voltage = filtered[mask]
-        raw_voltage = voltage[mask]  # <--- new: unfiltered trimmed voltage
+        trimmed_voltage = voltage[mask]  # Raw signal
+        trimmed_filtered = filtered[mask]
 
-        # Peak detection on trimmed filtered signal
-        t_peaks, _ = find_peaks(trimmed_voltage, height=np.mean(trimmed_voltage) + 1.8 * np.std(trimmed_voltage), distance=60, prominence=150)
-        true_peaks_trimmed, rr_intervals_trimmed, true_peak_times_trimmed = [], [], []
+        # Peak detection (filtered), then refine on raw
+        t_peaks, _ = find_peaks(trimmed_filtered,
+                                height=np.mean(trimmed_filtered) + 1.8 * np.std(trimmed_filtered),
+                                distance=min_distance, prominence=150)
+
+        final_peaks, peak_times, rr_intervals = [], [], []
+        window = int(0.03 * fs)  # ±30ms window
 
         if len(t_peaks):
-            true_peaks_trimmed.append(t_peaks[0])
-            true_peak_times_trimmed.append(trimmed_time[t_peaks[0]])
+            pk_idx = t_peaks[0]
+            s, e = max(pk_idx - window, 0), min(pk_idx + window, len(trimmed_voltage))
+            true_idx = s + np.argmax(trimmed_voltage[s:e])
+            final_peaks.append(true_idx)
+            peak_times.append(trimmed_time[true_idx])
+
             for i in range(1, len(t_peaks)):
-                rr = trimmed_time[t_peaks[i]] - trimmed_time[true_peaks_trimmed[-1]]
+                rr = trimmed_time[t_peaks[i]] - trimmed_time[final_peaks[-1]]
                 if 0.3 < rr < 1.5:
-                    true_peaks_trimmed.append(t_peaks[i])
-                    true_peak_times_trimmed.append(trimmed_time[t_peaks[i]])
-                    rr_intervals_trimmed.append(rr)
+                    pk_idx = t_peaks[i]
+                    s, e = max(pk_idx - window, 0), min(pk_idx + window, len(trimmed_voltage))
+                    true_idx = s + np.argmax(trimmed_voltage[s:e])
+                    final_peaks.append(true_idx)
+                    peak_times.append(trimmed_time[true_idx])
+                    rr_intervals.append(rr)
 
-        hrv = calculate_hrv_metrics(rr_intervals_trimmed)
+        hrv = calculate_hrv_metrics(rr_intervals)
 
-        # Optional static image
+        # Generate plot
         buf = io.BytesIO()
         plt.figure(figsize=(12, 5))
         plt.plot(trimmed_time, trimmed_voltage, color='blue')
-        plt.scatter(trimmed_time[true_peaks_trimmed], trimmed_voltage[true_peaks_trimmed], color='red')
+        plt.scatter([trimmed_time[p] for p in final_peaks], [trimmed_voltage[p] for p in final_peaks], color='red')
         plt.tight_layout()
         plt.savefig(buf, format="png")
         plt.close()
@@ -259,19 +269,20 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
             "hrvMetrics": hrv,
             "rrTable": [
                 {
-                    "timestamp": float(true_peak_times_trimmed[i]),
-                    "rr": None if i == 0 else float(rr_intervals_trimmed[i - 1])
+                    "timestamp": float(peak_times[i]),
+                    "rr": None if i == 0 else float(rr_intervals[i - 1])
                 }
-                for i in range(len(true_peak_times_trimmed))
+                for i in range(len(peak_times))
             ],
             "trimmedTime": trimmed_time.tolist(),
             "trimmedVoltage": trimmed_voltage.tolist(),
-            "rawVoltage": raw_voltage.tolist(),  # <--- added return of raw signal
-            "truePeaks": [int(i) for i in true_peaks_trimmed]
+            "rawVoltage": trimmed_voltage.tolist(),
+            "truePeaks": [int(i) for i in final_peaks]
         }
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 
 
@@ -284,13 +295,15 @@ async def trim_and_save(file: UploadFile = File(...), start_index: int = Form(0)
         df = df.astype(float)
 
         time = df["Time (s)"].values
-        voltage = df["Voltage (mV)"].values * 1000  # Scale to µV
-        filtered = butter_bandpass_filter(voltage)
+        voltage = df["Voltage (mV)"].values * 1000  # Convert to µV
+        fs = round(1 / np.mean(np.diff(time)))  # Detect actual sampling rate
+        filtered = butter_bandpass_filter(voltage, fs=fs)
         filtered = np.clip(filtered, -600, 600)
 
-        # Peak detection
         threshold = np.mean(filtered) + 1.8 * np.std(filtered)
-        peaks, _ = find_peaks(filtered, height=threshold, distance=60, prominence=150)
+        min_distance = int(0.3 * fs)
+        peaks, _ = find_peaks(filtered, height=threshold, distance=min_distance, prominence=150)
+
         true_peaks = []
         if len(peaks):
             true_peaks.append(peaks[0])
@@ -302,17 +315,23 @@ async def trim_and_save(file: UploadFile = File(...), start_index: int = Form(0)
         if start_index >= len(true_peaks):
             raise ValueError(f"Start index {start_index} is out of range.")
 
-        # Trim the signal
-        start_time = time[true_peaks[start_index]]
+        # Refine starting point to local max in ±30ms window
+        start_peak_index = true_peaks[start_index]
+        window = int(0.03 * fs)
+        s, e = max(start_peak_index - window, 0), min(start_peak_index + window, len(voltage))
+        refined_start = s + np.argmax(voltage[s:e])
+        start_time = time[refined_start]
+
+        # Trim the signal from refined peak time
         mask = time >= start_time
         trimmed_time = time[mask] - start_time
-        trimmed_voltage = filtered[mask]
+        trimmed_voltage = voltage[mask]
 
         # Create CSV content in original format (mV, ; delimiter, , decimal)
         csv_buf = io.StringIO()
         csv_buf.write("Time;Voltage\n")
         for t, v in zip(trimmed_time, trimmed_voltage):
-            csv_buf.write(f"{t:.6f};{v/1000:.9f}\n")  # back to mV
+            csv_buf.write(f"{t:.6f};{v/1000:.9f}\n")  # Convert back to mV
 
         csv_bytes = csv_buf.getvalue().encode("utf-8")
 
@@ -338,6 +357,7 @@ async def trim_and_save(file: UploadFile = File(...), start_index: int = Form(0)
         return {"message": "Trimmed file saved successfully", "filename": trimmed_name}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.delete("/files/{file_id}")
 async def delete_file(file_id: int):

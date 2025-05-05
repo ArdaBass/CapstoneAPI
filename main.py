@@ -64,12 +64,16 @@ def ping_head():
 
 @app.post("/import-participants")
 async def import_participants(file: UploadFile = File(...)):
+    import re
     try:
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents))
 
-        # Normalize headers
-        df.columns = [col.strip().lower().replace("\u00a0", " ") for col in df.columns]
+        # Normalize headers: lowercase, strip whitespace, remove colons, replace multiple spaces
+        df.columns = [
+            re.sub(r'\s+', ' ', col.strip().lower().replace("\u00a0", " ").replace(":", ""))
+            for col in df.columns
+        ]
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -79,7 +83,6 @@ async def import_participants(file: UploadFile = File(...)):
             person_id = int(i + 1)
             name = str(row.get("full name", "")).strip()
 
-            # Skip if name is empty
             if not name:
                 continue
 
@@ -102,20 +105,20 @@ async def import_participants(file: UploadFile = File(...)):
                 person_id,
                 name,
                 int(safe_get("age")),
-                int(safe_get("current stress level (1–10):")),
-                float(safe_get("sleep duration last night (hours):")),
-                str(safe_get("smoking status:")),
+                int(safe_get("current stress level (1–10)")),
+                float(safe_get("sleep duration last night (hours)")),
+                str(safe_get("smoking status")),
                 str(safe_get("caffeine intake today")),
                 str(safe_get("amount and time")),
-                str(safe_get("alcohol intake (last 24h):")),
-                str(safe_get("physical activity before test:")),
+                str(safe_get("alcohol intake (last 24h)")),
+                str(safe_get("physical activity before test")),
                 str(safe_get("type and time")),
                 str(safe_get("medication")),
                 str(safe_get("medication name")),
                 str(safe_get("known cardiovascular issues")),
                 str(safe_get("cardiovascular issues name")),
-                str(safe_get("resting for 5 minutes before test:")),
-                str(safe_get("recent illnesses (past 2 weeks):")),
+                str(safe_get("resting for 5 minutes before test")),
+                str(safe_get("recent illnesses (past 2 weeks)")),
                 str(safe_get("please explain"))
             ))
 
@@ -126,6 +129,7 @@ async def import_participants(file: UploadFile = File(...)):
         conn.close()
 
         return {"message": f"{added} new participants added to Azure SQL."}
+
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Import failed: {e}")
 

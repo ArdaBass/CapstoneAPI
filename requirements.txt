@@ -10,4 +10,4 @@ pymssql
 python-dotenv
 azure-storage-blob
 psycopg2-binary
-
+openpyxl

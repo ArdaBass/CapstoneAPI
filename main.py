@@ -64,7 +64,6 @@ def ping_head():
 
 @app.post("/import-participants")
 async def import_participants(file: UploadFile = File(...)):
-    import traceback
     try:
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents), engine="openpyxl")
@@ -95,8 +94,7 @@ async def import_participants(file: UploadFile = File(...)):
 
                 def parse_float(value):
                     try:
-                        # remove units like "hours", "hrs", etc.
-                        cleaned = ''.join(c for c in value if c.isdigit() or c == '.' or c == ',').replace(',', '.')
+                        cleaned = ''.join(c for c in value if c.isdigit() or c in ['.', ',']).replace(',', '.')
                         return float(cleaned)
                     except:
                         return None
@@ -107,6 +105,7 @@ async def import_participants(file: UploadFile = File(...)):
                     except:
                         return None
 
+                # Insert into Participants table
                 cursor.execute("""
                     INSERT INTO Participants (
                         Id, Name, Age, Stress, SleepHours, SmokingStatus,
@@ -136,6 +135,12 @@ async def import_participants(file: UploadFile = File(...)):
                     safe_get("please explain")
                 ))
                 added += 1
+
+                # ✅ Create folder with participant name if not exists
+                cursor.execute("SELECT COUNT(*) FROM Folders WHERE name = %s AND parent_id IS NULL", (name,))
+                if cursor.fetchone()[0] == 0:
+                    cursor.execute("INSERT INTO Folders (name, parent_id) VALUES (%s, NULL)", (name,))
+
             except Exception as row_err:
                 raise HTTPException(
                     status_code=400,
@@ -146,12 +151,11 @@ async def import_participants(file: UploadFile = File(...)):
         cursor.close()
         conn.close()
 
-        return {"message": f"{added} new participants added to Azure SQL."}
+        return {"message": f"{added} new participants added and folders created."}
 
     except Exception as e:
         print("Traceback:", traceback.format_exc())
         raise HTTPException(status_code=400, detail=f"Import failed: {e}")
-
 
 
 

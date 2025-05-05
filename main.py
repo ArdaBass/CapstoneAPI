@@ -64,15 +64,13 @@ def ping_head():
 
 @app.post("/import-participants")
 async def import_participants(file: UploadFile = File(...)):
-    import re
+    import traceback
     try:
         contents = await file.read()
-        df = pd.read_excel(io.BytesIO(contents))
+        df = pd.read_excel(io.BytesIO(contents), engine="openpyxl")
 
-        df.columns = [
-            re.sub(r'\s+', ' ', col.strip().lower().replace("\u00a0", " ").replace(":", ""))
-            for col in df.columns
-        ]
+        # Normalize headers
+        df.columns = [col.strip().lower().replace("\u00a0", " ") for col in df.columns]
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -80,22 +78,35 @@ async def import_participants(file: UploadFile = File(...)):
 
         for i, row in df.iterrows():
             person_id = int(i + 1)
-            name = str(row.get("full name", "")).strip()
-
-            if not name:
-                continue
-
-            cursor.execute("SELECT COUNT(*) FROM Participants WHERE Id = %s OR Name = %s", (person_id, name))
-            if cursor.fetchone()[0] > 0:
-                continue
-
-            def safe_get(col):
-                val = row.get(col, "")
-                if pd.isnull(val):
-                    val = ""
-                return val
-
             try:
+                name = str(row.get("full name", "")).strip()
+                if not name:
+                    continue
+
+                cursor.execute("SELECT COUNT(*) FROM Participants WHERE Id = %s OR Name = %s", (person_id, name))
+                if cursor.fetchone()[0] > 0:
+                    continue
+
+                def safe_get(col):
+                    val = row.get(col, "")
+                    if pd.isna(val):
+                        return ""
+                    return str(val).strip()
+
+                def parse_float(value):
+                    try:
+                        # remove units like "hours", "hrs", etc.
+                        cleaned = ''.join(c for c in value if c.isdigit() or c == '.' or c == ',').replace(',', '.')
+                        return float(cleaned)
+                    except:
+                        return None
+
+                def parse_int(value):
+                    try:
+                        return int(''.join(filter(str.isdigit, value)))
+                    except:
+                        return None
+
                 cursor.execute("""
                     INSERT INTO Participants (
                         Id, Name, Age, Stress, SleepHours, SmokingStatus,
@@ -107,27 +118,29 @@ async def import_participants(file: UploadFile = File(...)):
                 """, (
                     person_id,
                     name,
-                    int(safe_get("age")),
-                    int(safe_get("current stress level (1–10)")),
-                    float(safe_get("sleep duration last night (hours)")),
-                    str(safe_get("smoking status")),
-                    str(safe_get("caffeine intake today")),
-                    str(safe_get("amount and time")),
-                    str(safe_get("alcohol intake (last 24h)")),
-                    str(safe_get("physical activity before test")),
-                    str(safe_get("type and time")),
-                    str(safe_get("medication")),
-                    str(safe_get("medication name")),
-                    str(safe_get("known cardiovascular issues")),
-                    str(safe_get("cardiovascular issues name")),
-                    str(safe_get("resting for 5 minutes before test")),
-                    str(safe_get("recent illnesses (past 2 weeks)")),
-                    str(safe_get("please explain"))
+                    parse_int(safe_get("age")),
+                    parse_int(safe_get("current stress level (1–10):")),
+                    parse_float(safe_get("sleep duration last night (hours):")),
+                    safe_get("smoking status:"),
+                    safe_get("caffeine intake today"),
+                    safe_get("amount and time"),
+                    safe_get("alcohol intake (last 24h):"),
+                    safe_get("physical activity before test:"),
+                    safe_get("type and time"),
+                    safe_get("medication"),
+                    safe_get("medication name"),
+                    safe_get("known cardiovascular issues"),
+                    safe_get("cardiovascular issues name"),
+                    safe_get("resting for 5 minutes before test:"),
+                    safe_get("recent illnesses (past 2 weeks):"),
+                    safe_get("please explain")
                 ))
                 added += 1
-
-            except Exception as row_error:
-                raise HTTPException(status_code=400, detail=f"Error on row {i+2}: {row_error}")
+            except Exception as row_err:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Error on row {i+2}: {row_err}"
+                )
 
         conn.commit()
         cursor.close()
@@ -136,7 +149,9 @@ async def import_participants(file: UploadFile = File(...)):
         return {"message": f"{added} new participants added to Azure SQL."}
 
     except Exception as e:
+        print("Traceback:", traceback.format_exc())
         raise HTTPException(status_code=400, detail=f"Import failed: {e}")
+
 
 
 

@@ -16,6 +16,8 @@ import uuid
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 from pydantic import BaseModel
+import traceback
+
 
 
 

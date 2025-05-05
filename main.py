@@ -139,9 +139,11 @@ async def import_participants(file: UploadFile = File(...)):
                 added += 1
 
                 # ✅ Create folder with participant name if not exists
-                cursor.execute("SELECT COUNT(*) FROM Folders WHERE name = %s AND parent_id IS NULL", (name,))
+                cursor.execute("SELECT COUNT(*) FROM Folders WHERE Name = %s AND ParentId IS NULL", (name,))
                 if cursor.fetchone()[0] == 0:
-                    cursor.execute("INSERT INTO Folders (name, ParentId) VALUES (%s, NULL)", (name,))
+                    cursor.execute("INSERT INTO Folders (Name, ParentId) VALUES (%s, NULL)", (name,))
+
+
 
             except Exception as row_err:
                 raise HTTPException(

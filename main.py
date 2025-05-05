@@ -69,7 +69,6 @@ async def import_participants(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents))
 
-        # Normalize headers: lowercase, strip whitespace, remove colons, replace multiple spaces
         df.columns = [
             re.sub(r'\s+', ' ', col.strip().lower().replace("\u00a0", " ").replace(":", ""))
             for col in df.columns
@@ -91,38 +90,44 @@ async def import_participants(file: UploadFile = File(...)):
                 continue
 
             def safe_get(col):
-                return row.get(col, "")
+                val = row.get(col, "")
+                if pd.isnull(val):
+                    val = ""
+                return val
 
-            cursor.execute("""
-                INSERT INTO Participants (
-                    Id, Name, Age, Stress, SleepHours, SmokingStatus,
-                    CaffeineToday, CaffeineDetails, Alcohol, PhysicalActivity,
-                    ActivityDetails, Medication, MedicationName,
-                    CardioIssues, CardioIssuesName, Rested5Min,
-                    RecentIllness, IllnessExplanation
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                person_id,
-                name,
-                int(safe_get("age")),
-                int(safe_get("current stress level (1–10)")),
-                float(safe_get("sleep duration last night (hours)")),
-                str(safe_get("smoking status")),
-                str(safe_get("caffeine intake today")),
-                str(safe_get("amount and time")),
-                str(safe_get("alcohol intake (last 24h)")),
-                str(safe_get("physical activity before test")),
-                str(safe_get("type and time")),
-                str(safe_get("medication")),
-                str(safe_get("medication name")),
-                str(safe_get("known cardiovascular issues")),
-                str(safe_get("cardiovascular issues name")),
-                str(safe_get("resting for 5 minutes before test")),
-                str(safe_get("recent illnesses (past 2 weeks)")),
-                str(safe_get("please explain"))
-            ))
+            try:
+                cursor.execute("""
+                    INSERT INTO Participants (
+                        Id, Name, Age, Stress, SleepHours, SmokingStatus,
+                        CaffeineToday, CaffeineDetails, Alcohol, PhysicalActivity,
+                        ActivityDetails, Medication, MedicationName,
+                        CardioIssues, CardioIssuesName, Rested5Min,
+                        RecentIllness, IllnessExplanation
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    person_id,
+                    name,
+                    int(safe_get("age")),
+                    int(safe_get("current stress level (1–10)")),
+                    float(safe_get("sleep duration last night (hours)")),
+                    str(safe_get("smoking status")),
+                    str(safe_get("caffeine intake today")),
+                    str(safe_get("amount and time")),
+                    str(safe_get("alcohol intake (last 24h)")),
+                    str(safe_get("physical activity before test")),
+                    str(safe_get("type and time")),
+                    str(safe_get("medication")),
+                    str(safe_get("medication name")),
+                    str(safe_get("known cardiovascular issues")),
+                    str(safe_get("cardiovascular issues name")),
+                    str(safe_get("resting for 5 minutes before test")),
+                    str(safe_get("recent illnesses (past 2 weeks)")),
+                    str(safe_get("please explain"))
+                ))
+                added += 1
 
-            added += 1
+            except Exception as row_error:
+                raise HTTPException(status_code=400, detail=f"Error on row {i+2}: {row_error}")
 
         conn.commit()
         cursor.close()
@@ -132,6 +137,7 @@ async def import_participants(file: UploadFile = File(...)):
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Import failed: {e}")
+
 
 
 

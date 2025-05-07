@@ -312,12 +312,23 @@ def calculate_hrv_metrics(rr_intervals):
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:
-        df = pd.read_csv(file.file, delimiter=";", decimal=",", skiprows=[1])
-        df.columns = ["Time (s)", "Voltage (mV)"]
+        # Read CSV without skipping any rows
+        df = pd.read_csv(file.file, delimiter=";", decimal=",", skip_blank_lines=True)
+        df.columns = [col.strip().lower() for col in df.columns]
+
+        # Rename known alternative headers
+        if "sec" in df.columns and "mv" in df.columns:
+            df.rename(columns={"sec": "time (s)", "mv": "voltage (mv)"}, inplace=True)
+        elif "time" in df.columns and "voltage" in df.columns:
+            df.rename(columns={"time": "time (s)", "voltage": "voltage (mv)"}, inplace=True)
+
+        if "time (s)" not in df.columns or "voltage (mv)" not in df.columns:
+            raise HTTPException(status_code=400, detail=f"CSV missing required columns. Found: {df.columns.tolist()}")
+
         df = df.astype(float)
 
-        time = df["Time (s)"].values
-        voltage = df["Voltage (mV)"].values * 1000  # Convert to µV
+        time = df["time (s)"].values
+        voltage = df["voltage (mv)"].values * 1000  # Convert to µV
         fs = round(1 / np.mean(np.diff(time)))  # Sampling frequency
         filtered = butter_bandpass_filter(voltage, fs=fs)
         filtered = np.clip(filtered, -600, 600)
@@ -399,7 +410,8 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         }
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"Analyze failed: {str(e)}")
+
 
 
 

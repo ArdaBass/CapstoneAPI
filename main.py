@@ -410,7 +410,9 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         }
 
     except Exception as e:
+        print("TRACEBACK:\n", traceback.format_exc())  # Add this line
         raise HTTPException(status_code=400, detail=f"Analyze failed: {str(e)}")
+
 
 
 

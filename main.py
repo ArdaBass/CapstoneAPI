@@ -312,28 +312,39 @@ def calculate_hrv_metrics(rr_intervals):
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:
-        # Read CSV without skipping any rows
-        df = pd.read_csv(file.file, delimiter=";", decimal=",", skip_blank_lines=True)
-        df.columns = [col.strip().lower() for col in df.columns]
+        # Read all lines and process manually to handle multiple header rows
+        raw = await file.read()
+        text = raw.decode("utf-8").replace(",", ".")
+        lines = text.splitlines()
 
-        # Rename known alternative headers
-        if "sec" in df.columns and "mv" in df.columns:
-            df.rename(columns={"sec": "time (s)", "mv": "voltage (mv)"}, inplace=True)
+        # Remove lines like 'sec;mV' and blank lines
+        cleaned_lines = [line for line in lines if not any(x in line.lower() for x in ["sec", "mv"]) and line.strip()]
+        if not cleaned_lines or not cleaned_lines[0].lower().startswith("time"):
+            raise HTTPException(status_code=400, detail="CSV missing valid headers.")
+
+        df = pd.read_csv(io.StringIO("\n".join(cleaned_lines)), delimiter=";", skip_blank_lines=True)
+        df.columns = [c.strip().lower() for c in df.columns]
+
+        # Normalize headers
+        if "time (s)" in df.columns and "voltage (mv)" in df.columns:
+            df.rename(columns={"time (s)": "time", "voltage (mv)": "voltage"}, inplace=True)
         elif "time" in df.columns and "voltage" in df.columns:
-            df.rename(columns={"time": "time (s)", "voltage": "voltage (mv)"}, inplace=True)
-
-        if "time (s)" not in df.columns or "voltage (mv)" not in df.columns:
+            pass
+        else:
             raise HTTPException(status_code=400, detail=f"CSV missing required columns. Found: {df.columns.tolist()}")
 
+        # Drop any non-numeric rows
+        df = df[pd.to_numeric(df["time"], errors="coerce").notnull()]
+        df = df[pd.to_numeric(df["voltage"], errors="coerce").notnull()]
         df = df.astype(float)
 
-        time = df["time (s)"].values
-        voltage = df["voltage (mv)"].values * 1000  # Convert to µV
-        fs = round(1 / np.mean(np.diff(time)))  # Sampling frequency
+        # Proceed with your existing logic...
+        time = df["time"].values
+        voltage = df["voltage"].values * 1000  # Convert to µV
+        fs = round(1 / np.mean(np.diff(time)))
         filtered = butter_bandpass_filter(voltage, fs=fs)
         filtered = np.clip(filtered, -600, 600)
 
-        # Initial detection to find start index
         threshold = np.mean(filtered) + 1.8 * np.std(filtered)
         min_distance = int(0.3 * fs)
         peaks, _ = find_peaks(filtered, height=threshold, distance=min_distance, prominence=150)
@@ -352,16 +363,15 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         start_time = time[true_peaks[start_index]]
         mask = time >= start_time
         trimmed_time = time[mask] - start_time
-        trimmed_voltage = voltage[mask]  # Raw signal
+        trimmed_voltage = voltage[mask]
         trimmed_filtered = filtered[mask]
 
-        # Peak detection (filtered), then refine on raw
         t_peaks, _ = find_peaks(trimmed_filtered,
                                 height=np.mean(trimmed_filtered) + 1.8 * np.std(trimmed_filtered),
                                 distance=min_distance, prominence=150)
 
         final_peaks, peak_times, rr_intervals = [], [], []
-        window = int(0.03 * fs)  # ±30ms window
+        window = int(0.03 * fs)
 
         if len(t_peaks):
             pk_idx = t_peaks[0]
@@ -382,7 +392,7 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
 
         hrv = calculate_hrv_metrics(rr_intervals)
 
-        # Generate plot
+        # Plot ECG
         buf = io.BytesIO()
         plt.figure(figsize=(12, 5))
         plt.plot(trimmed_time, trimmed_voltage, color='blue')
@@ -410,8 +420,9 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         }
 
     except Exception as e:
-        print("TRACEBACK:\n", traceback.format_exc())  # Add this line
+        print("TRACEBACK:\n", traceback.format_exc())
         raise HTTPException(status_code=400, detail=f"Analyze failed: {str(e)}")
+
 
 
 

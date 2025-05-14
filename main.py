@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 from pydantic import BaseModel
+from urllib.parse import quote
 import traceback
 
 
@@ -250,28 +251,21 @@ def download_file(file_id: int):
             raise HTTPException(status_code=404, detail=f"Blob '{blob_path}' not found in storage")
 
         content = blob_client.download_blob().readall()
+
+        # ✅ Correct header using RFC 5987 encoding
+        encoded_filename = quote(filename)
+
         return StreamingResponse(
             io.BytesIO(content),
             media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+            }
         )
 
     except Exception as e:
         print("DOWNLOAD ERROR:", traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Download failed: {e}")
-
-@app.put("/files/{file_id}/move")
-async def move_file(file_id: int, new_folder_id: int = Form(...)):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE Files SET FolderId = %s WHERE Id = %s", (new_folder_id, file_id))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return {"message": "File moved successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 # ---------------- ECG & HRV Analysis ----------------
 def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):

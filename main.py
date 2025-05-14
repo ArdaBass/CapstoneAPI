@@ -241,14 +241,24 @@ def download_file(file_id: int):
         conn.close()
 
         if not row:
-            raise HTTPException(status_code=404, detail="File not found")
+            raise HTTPException(status_code=404, detail="File not found in database")
 
         blob_path, filename = row
         blob_client = container_client.get_blob_client(blob_path)
-        stream = blob_client.download_blob()
-        return StreamingResponse(stream.chunks(), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+        if not blob_client.exists():
+            raise HTTPException(status_code=404, detail=f"Blob '{blob_path}' not found in storage")
+
+        content = blob_client.download_blob().readall()
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print("DOWNLOAD ERROR:", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Download failed: {e}")
 
 @app.put("/files/{file_id}/move")
 async def move_file(file_id: int, new_folder_id: int = Form(...)):

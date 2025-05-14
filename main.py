@@ -16,7 +16,6 @@ import uuid
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 from pydantic import BaseModel
-from urllib.parse import quote
 import traceback
 
 
@@ -65,13 +64,24 @@ def ping_head():
     return {"status": "ok"}
 
 
+def normalize_folder_name(name):
+    tr_map = str.maketrans({
+        'ç': 'c', 'Ç': 'C',
+        'ğ': 'g', 'Ğ': 'G',
+        'ı': 'i', 'İ': 'I',
+        'ö': 'o', 'Ö': 'O',
+        'ş': 's', 'Ş': 'S',
+        'ü': 'u', 'Ü': 'U',
+    })
+    return name.translate(tr_map).replace(" ", "_")
+
+
+
 @app.post("/import-participants")
 async def import_participants(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents), engine="openpyxl")
-
-        # Normalize headers
         df.columns = [col.strip().lower().replace("\u00a0", " ") for col in df.columns]
 
         conn = get_db_connection()
@@ -108,7 +118,7 @@ async def import_participants(file: UploadFile = File(...)):
                     except:
                         return None
 
-                # Insert into Participants table
+                # Insert participant
                 cursor.execute("""
                     INSERT INTO Participants (
                         Id, Name, Age, Stress, SleepHours, SmokingStatus,
@@ -139,12 +149,26 @@ async def import_participants(file: UploadFile = File(...)):
                 ))
                 added += 1
 
-                # ✅ Create folder with participant name if not exists
-                cursor.execute("SELECT COUNT(*) FROM Folders WHERE Name = %s AND ParentId IS NULL", (name,))
-                if cursor.fetchone()[0] == 0:
-                    cursor.execute("INSERT INTO Folders (Name, ParentId) VALUES (%s, NULL)", (name,))
+                # 🔠 Normalize folder name
+                normalized_name = normalize_folder_name(name)
 
+                # 👤 Check or create main folder
+                cursor.execute("SELECT Id FROM Folders WHERE Name = %s AND ParentId IS NULL", (normalized_name,))
+                result = cursor.fetchone()
+                if result:
+                    parent_id = result[0]
+                else:
+                    cursor.execute("INSERT INTO Folders (Name, ParentId) VALUES (%s, NULL)", (normalized_name,))
+                    parent_id = cursor.lastrowid
 
+                # 📁 Create Biopac, Watch, ML subfolders
+                for subfolder in ["Biopac", "Watch", "ML"]:
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM Folders WHERE Name = %s AND ParentId = %s",
+                        (subfolder, parent_id)
+                    )
+                    if cursor.fetchone()[0] == 0:
+                        cursor.execute("INSERT INTO Folders (Name, ParentId) VALUES (%s, %s)", (subfolder, parent_id))
 
             except Exception as row_err:
                 raise HTTPException(
@@ -242,30 +266,27 @@ def download_file(file_id: int):
         conn.close()
 
         if not row:
-            raise HTTPException(status_code=404, detail="File not found in database")
+            raise HTTPException(status_code=404, detail="File not found")
 
         blob_path, filename = row
         blob_client = container_client.get_blob_client(blob_path)
-
-        if not blob_client.exists():
-            raise HTTPException(status_code=404, detail=f"Blob '{blob_path}' not found in storage")
-
-        content = blob_client.download_blob().readall()
-
-        # ✅ Correct header using RFC 5987 encoding
-        encoded_filename = quote(filename)
-
-        return StreamingResponse(
-            io.BytesIO(content),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
-            }
-        )
-
+        stream = blob_client.download_blob()
+        return StreamingResponse(stream.chunks(), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
     except Exception as e:
-        print("DOWNLOAD ERROR:", traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Download failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/files/{file_id}/move")
+async def move_file(file_id: int, new_folder_id: int = Form(...)):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Files SET FolderId = %s WHERE Id = %s", (new_folder_id, file_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "File moved successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ---------------- ECG & HRV Analysis ----------------
 def butter_bandpass_filter(data, lowcut=0.5, highcut=40.0, fs=512, order=4):
@@ -700,4 +721,3 @@ async def merge_files(data: MergeRequest):
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected server error: {e}")
-

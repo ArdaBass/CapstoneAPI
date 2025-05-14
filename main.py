@@ -604,7 +604,7 @@ async def delete_folder(folder_id: int):
 class MergeRequest(BaseModel):
     folder_id: int
     file_ids: List[int]
-
+    
 @app.post("/merge-files")
 async def merge_files(data: MergeRequest):
     try:
@@ -621,7 +621,9 @@ async def merge_files(data: MergeRequest):
         folder_name = folder_row[0].replace(" ", "_").lower()
 
         merged_df = None
-        total_time_offset = 0.0
+        last_time = 0.0
+        last_voltage = 0.0
+        sampling_interval = None
 
         for file_id in file_ids:
             cursor.execute("SELECT FilePath FROM Files WHERE Id = %s AND FolderId = %s", (file_id, folder_id))
@@ -640,13 +642,29 @@ async def merge_files(data: MergeRequest):
             except Exception as err:
                 raise HTTPException(status_code=500, detail=f"Error reading or parsing {blob_path}: {err}")
 
+            if df.empty:
+                continue
+
+            # Calculate sampling interval only once
+            if sampling_interval is None and len(df) > 1:
+                sampling_interval = df["Time"].iloc[1] - df["Time"].iloc[0]
+
             if merged_df is None:
                 merged_df = df
-                total_time_offset = df["Time"].iloc[-1] + (df["Time"].iloc[1] - df["Time"].iloc[0])
             else:
-                df["Time"] += total_time_offset
-                total_time_offset = df["Time"].iloc[-1] + (df["Time"].iloc[1] - df["Time"].iloc[0])
+                # Align both time and voltage to previous file's end
+                time_shift = last_time - df["Time"].iloc[0]
+                voltage_shift = last_voltage - df["Voltage"].iloc[0]
+                df["Time"] += time_shift
+                df["Voltage"] += voltage_shift
                 merged_df = pd.concat([merged_df, df], ignore_index=True)
+
+            # Update last time and voltage for next file alignment
+            last_time = merged_df["Time"].iloc[-1] + (sampling_interval if sampling_interval else 0.001)
+            last_voltage = merged_df["Voltage"].iloc[-1]
+
+        if merged_df is None or merged_df.empty:
+            raise HTTPException(status_code=400, detail="No valid files to merge.")
 
         # Write merged CSV
         output_csv = io.StringIO()
@@ -678,3 +696,4 @@ async def merge_files(data: MergeRequest):
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected server error: {e}")
+

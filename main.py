@@ -643,7 +643,8 @@ async def merge_files(data: MergeRequest):
         folder_row = cursor.fetchone()
         if not folder_row:
             raise HTTPException(status_code=404, detail="Folder not found")
-        folder_name = folder_row[0].replace(" ", "_").lower()
+        folder_name = normalize_folder_name(folder_row[0]).lower()
+
 
         merged_df = None
         last_time = 0.0

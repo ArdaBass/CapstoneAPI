@@ -449,72 +449,87 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
 @app.post("/trim-and-save")
 async def trim_and_save(file: UploadFile = File(...), start_index: int = Form(0), folder_id: int = Form(...)):
     try:
-        # 📥 Read file and handle optional unit line (sec;mV)
+        # 📥 Read file and handle optional unit line
         content = await file.read()
-        text = content.decode("utf-8")
+        text = content.decode("utf-8").replace(",", ".")
         lines = text.strip().splitlines()
 
         # Skip second row if it contains units
         if len(lines) > 1 and ("sec" in lines[1].lower() or "mv" in lines[1].lower()):
-            data_lines = lines[2:]  # skip header and units
+            data_lines = lines[2:]
         else:
-            data_lines = lines[1:]  # skip only header
+            data_lines = lines[1:]
 
-        # Build CSV string with proper header
-        csv_text = "Time (s);Voltage (mV)\n" + "\n".join(data_lines)
-        df = pd.read_csv(io.StringIO(csv_text), delimiter=";", decimal=",")
+        csv_text = "Time;Voltage\n" + "\n".join(data_lines)
+        df = pd.read_csv(io.StringIO(csv_text), delimiter=";", skip_blank_lines=True)
+        df.columns = [c.strip().lower() for c in df.columns]
+
+        df = df[pd.to_numeric(df["time"], errors="coerce").notnull()]
+        df = df[pd.to_numeric(df["voltage"], errors="coerce").notnull()]
         df = df.astype(float)
 
-        # 📊 ECG Processing
-        time = df["Time (s)"].values
-        voltage = df["Voltage (mV)"].values * 1000  # mV to µV
+        time = df["time"].values
+        voltage = df["voltage"].values
         fs = round(1 / np.mean(np.diff(time)))
 
-        filtered = butter_bandpass_filter(voltage, fs=fs)
-        filtered = np.clip(filtered, -600, 600)
+        from scipy.signal import savgol_filter
 
-        threshold = np.mean(filtered) + 1.8 * np.std(filtered)
+        # Match analyze logic exactly
+        voltage_uv = voltage * 1000
+        filtered = butter_bandpass_filter(voltage_uv, fs=fs)
+        smoothed = savgol_filter(filtered, window_length=19, polyorder=2)
+        smoothed = np.clip(smoothed, -600, 600)
+        derivative = np.gradient(smoothed)
+        sharpness = derivative ** 2
+
         min_distance = int(0.3 * fs)
-        peaks, _ = find_peaks(filtered, height=threshold, distance=min_distance, prominence=150)
+        peak_candidates, _ = find_peaks(sharpness, distance=min_distance, prominence=np.std(sharpness))
 
-        true_peaks = []
-        if len(peaks):
-            true_peaks.append(peaks[0])
-            for i in range(1, len(peaks)):
-                rr = time[peaks[i]] - time[true_peaks[-1]]
-                if 0.3 < rr < 1.5:
-                    true_peaks.append(peaks[i])
+        final_peaks = []
+        search_window = int(0.03 * fs)
 
-        if start_index >= len(true_peaks):
-            raise ValueError(f"Start index {start_index} is out of range. Found only {len(true_peaks)} peaks.")
+        for idx in peak_candidates:
+            s = max(0, idx - search_window)
+            e = min(len(smoothed), idx + search_window)
+            true_idx_smoothed = s + np.argmax(smoothed[s:e])
+            true_idx_voltage = s + np.argmax(voltage_uv[s:e])
+            true_idx = true_idx_voltage if voltage_uv[true_idx_voltage] >= voltage_uv[true_idx_smoothed] else true_idx_smoothed
 
-        # 🕒 Align trim start to nearest local max
-        start_peak_index = true_peaks[start_index]
-        window = int(0.03 * fs)
-        s, e = max(start_peak_index - window, 0), min(start_peak_index + window, len(voltage))
-        refined_start = s + np.argmax(voltage[s:e])
-        start_time = time[refined_start]
+            check_window = int(0.04 * fs)
+            ws = max(0, true_idx - check_window)
+            we = min(len(voltage_uv), true_idx + check_window)
+            if voltage_uv[true_idx] < max(voltage_uv[ws:we]):
+                continue
 
-        # ✂️ Trim data
+            if final_peaks and (time[true_idx] - time[final_peaks[-1]]) < 0.3:
+                continue
+
+            final_peaks.append(true_idx)
+
+        if start_index >= len(final_peaks):
+            raise ValueError(f"Start index {start_index} is out of range. Found only {len(final_peaks)} peaks.")
+
+        # 🕒 Trim from selected peak
+        start_time = time[final_peaks[start_index]]
         mask = time >= start_time
         trimmed_time = time[mask] - start_time
-        trimmed_voltage = voltage[mask]
+        trimmed_voltage = voltage_uv[mask]
 
-        # 💾 Save to CSV (mV format)
+        # 💾 Save as CSV in mV
         csv_buf = io.StringIO()
         csv_buf.write("Time;Voltage\n")
         for t, v in zip(trimmed_time, trimmed_voltage):
-            csv_buf.write(f"{t:.6f};{v/1000:.9f}\n")  # µV to mV
+            csv_buf.write(f"{t:.6f};{v/1000:.9f}\n")
 
         csv_bytes = csv_buf.getvalue().encode("utf-8")
         original_name = os.path.splitext(file.filename)[0]
         trimmed_name = f"trimmed_{original_name}.csv"
 
-        # ☁️ Upload to Azure Blob
+        # ☁️ Upload to Azure
         blob_client = container_client.get_blob_client(trimmed_name)
         blob_client.upload_blob(csv_bytes, overwrite=True)
 
-        # 🗂️ Save metadata in DB
+        # 🗂️ Save metadata
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
@@ -530,6 +545,7 @@ async def trim_and_save(file: UploadFile = File(...), start_index: int = Form(0)
     except Exception as e:
         print("TRACEBACK:\n", traceback.format_exc())
         raise HTTPException(status_code=400, detail=f"Trim and save failed: {e}")
+
 
 
 

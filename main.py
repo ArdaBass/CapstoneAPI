@@ -449,14 +449,27 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
 @app.post("/trim-and-save")
 async def trim_and_save(file: UploadFile = File(...), start_index: int = Form(0), folder_id: int = Form(...)):
     try:
-        # Read and parse the uploaded ECG CSV
-        df = pd.read_csv(file.file, delimiter=";", decimal=",", skiprows=[1])
-        df.columns = ["Time (s)", "Voltage (mV)"]
+        # 📥 Read file and handle optional unit line (sec;mV)
+        content = await file.read()
+        text = content.decode("utf-8")
+        lines = text.strip().splitlines()
+
+        # Skip second row if it contains units
+        if len(lines) > 1 and ("sec" in lines[1].lower() or "mv" in lines[1].lower()):
+            data_lines = lines[2:]  # skip header and units
+        else:
+            data_lines = lines[1:]  # skip only header
+
+        # Build CSV string with proper header
+        csv_text = "Time (s);Voltage (mV)\n" + "\n".join(data_lines)
+        df = pd.read_csv(io.StringIO(csv_text), delimiter=";", decimal=",")
         df = df.astype(float)
 
+        # 📊 ECG Processing
         time = df["Time (s)"].values
-        voltage = df["Voltage (mV)"].values * 1000  # Convert to µV
-        fs = round(1 / np.mean(np.diff(time)))  # Detect actual sampling rate
+        voltage = df["Voltage (mV)"].values * 1000  # mV to µV
+        fs = round(1 / np.mean(np.diff(time)))
+
         filtered = butter_bandpass_filter(voltage, fs=fs)
         filtered = np.clip(filtered, -600, 600)
 
@@ -473,37 +486,35 @@ async def trim_and_save(file: UploadFile = File(...), start_index: int = Form(0)
                     true_peaks.append(peaks[i])
 
         if start_index >= len(true_peaks):
-            raise ValueError(f"Start index {start_index} is out of range.")
+            raise ValueError(f"Start index {start_index} is out of range. Found only {len(true_peaks)} peaks.")
 
-        # Refine starting point to local max in ±30ms window
+        # 🕒 Align trim start to nearest local max
         start_peak_index = true_peaks[start_index]
         window = int(0.03 * fs)
         s, e = max(start_peak_index - window, 0), min(start_peak_index + window, len(voltage))
         refined_start = s + np.argmax(voltage[s:e])
         start_time = time[refined_start]
 
-        # Trim the signal from refined peak time
+        # ✂️ Trim data
         mask = time >= start_time
         trimmed_time = time[mask] - start_time
         trimmed_voltage = voltage[mask]
 
-        # Create CSV content in original format (mV, ; delimiter, , decimal)
+        # 💾 Save to CSV (mV format)
         csv_buf = io.StringIO()
         csv_buf.write("Time;Voltage\n")
         for t, v in zip(trimmed_time, trimmed_voltage):
-            csv_buf.write(f"{t:.6f};{v/1000:.9f}\n")  # Convert back to mV
+            csv_buf.write(f"{t:.6f};{v/1000:.9f}\n")  # µV to mV
 
         csv_bytes = csv_buf.getvalue().encode("utf-8")
-
-        # Construct filename
         original_name = os.path.splitext(file.filename)[0]
         trimmed_name = f"trimmed_{original_name}.csv"
 
-        # Upload to Azure
+        # ☁️ Upload to Azure Blob
         blob_client = container_client.get_blob_client(trimmed_name)
         blob_client.upload_blob(csv_bytes, overwrite=True)
 
-        # Save metadata to DB
+        # 🗂️ Save metadata in DB
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
@@ -515,8 +526,11 @@ async def trim_and_save(file: UploadFile = File(...), start_index: int = Form(0)
         conn.close()
 
         return {"message": "Trimmed file saved successfully", "filename": trimmed_name}
+
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print("TRACEBACK:\n", traceback.format_exc())
+        raise HTTPException(status_code=400, detail=f"Trim and save failed: {e}")
+
 
 
 @app.delete("/files/{file_id}")

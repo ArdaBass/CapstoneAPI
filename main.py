@@ -341,7 +341,9 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         text = raw.decode("utf-8").replace(",", ".")
         lines = text.splitlines()
 
-cleaned_lines = [line for line in lines if line.strip()]  # Only remove blank lines, not headers
+        cleaned_lines = [line for line in lines if line.strip()]  # ✅ Correctly indented inside try
+
+
         if not cleaned_lines or not cleaned_lines[0].lower().startswith("time"):
             raise HTTPException(status_code=400, detail="CSV missing valid headers.")
 

@@ -337,19 +337,20 @@ def calculate_hrv_metrics(rr_intervals):
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:
+        # Read all lines and process manually to handle multiple header rows
         raw = await file.read()
         text = raw.decode("utf-8").replace(",", ".")
         lines = text.splitlines()
 
-        cleaned_lines = [line for line in lines if line.strip()]  # ✅ Correctly indented inside try
-
-
+        # Remove lines like 'sec;mV' and blank lines
+        cleaned_lines = [line for line in lines if not any(x in line.lower() for x in ["sec", "mv"]) and line.strip()]
         if not cleaned_lines or not cleaned_lines[0].lower().startswith("time"):
             raise HTTPException(status_code=400, detail="CSV missing valid headers.")
 
         df = pd.read_csv(io.StringIO("\n".join(cleaned_lines)), delimiter=";", skip_blank_lines=True)
         df.columns = [c.strip().lower() for c in df.columns]
 
+        # Normalize headers
         if "time (s)" in df.columns and "voltage (mv)" in df.columns:
             df.rename(columns={"time (s)": "time", "voltage (mv)": "voltage"}, inplace=True)
         elif "time" in df.columns and "voltage" in df.columns:
@@ -357,28 +358,22 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         else:
             raise HTTPException(status_code=400, detail=f"CSV missing required columns. Found: {df.columns.tolist()}")
 
+        # Drop any non-numeric rows
         df = df[pd.to_numeric(df["time"], errors="coerce").notnull()]
         df = df[pd.to_numeric(df["voltage"], errors="coerce").notnull()]
         df = df.astype(float)
 
+        # Proceed with your existing logic...
         time = df["time"].values
-        voltage = df["voltage"].values * 1000  # mV → µV
+        voltage = df["voltage"].values * 1000  # Convert to µV
         fs = round(1 / np.mean(np.diff(time)))
-
-        # ✅ Skip the first second to avoid startup noise
-        mask = time >= 1.0
-        time = time[mask]
-        voltage = voltage[mask]
-
-        # ✅ Bandpass filter
         filtered = butter_bandpass_filter(voltage, fs=fs)
         filtered = np.clip(filtered, -600, 600)
 
-        threshold = np.mean(filtered) + 1.3 * np.std(filtered)
+        threshold = np.mean(filtered) + 1.8 * np.std(filtered)
         min_distance = int(0.3 * fs)
-        peaks, _ = find_peaks(filtered, height=threshold, distance=min_distance, prominence=80)
+        peaks, _ = find_peaks(filtered, height=threshold, distance=min_distance, prominence=150)
 
-        # ✅ Biologically valid R-peaks
         true_peaks = []
         if len(peaks):
             true_peaks.append(peaks[0])
@@ -388,39 +383,41 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
                     true_peaks.append(peaks[i])
 
         if start_index >= len(true_peaks):
-            raise HTTPException(status_code=400, detail=f"Start index {start_index} is out of range. Found {len(true_peaks)} peaks.")
+            raise ValueError(f"Start index {start_index} is out of range.")
 
-        # ✅ Trim from selected peak
         start_time = time[true_peaks[start_index]]
         mask = time >= start_time
         trimmed_time = time[mask] - start_time
         trimmed_voltage = voltage[mask]
         trimmed_filtered = filtered[mask]
 
-        t_peaks, _ = find_peaks(
-            trimmed_filtered,
-            height=np.mean(trimmed_filtered) + 1.3 * np.std(trimmed_filtered),
-            distance=min_distance,
-            prominence=80
-        )
+        t_peaks, _ = find_peaks(trimmed_filtered,
+                                height=np.mean(trimmed_filtered) + 1.8 * np.std(trimmed_filtered),
+                                distance=min_distance, prominence=150)
 
         final_peaks, peak_times, rr_intervals = [], [], []
         window = int(0.03 * fs)
 
-        for i in range(len(t_peaks)):
-            pk_idx = t_peaks[i]
+        if len(t_peaks):
+            pk_idx = t_peaks[0]
             s, e = max(pk_idx - window, 0), min(pk_idx + window, len(trimmed_voltage))
             true_idx = s + np.argmax(trimmed_voltage[s:e])
-            if trimmed_voltage[true_idx] < 0:
-                continue
-            if not final_peaks or (trimmed_time[true_idx] - trimmed_time[final_peaks[-1]]) > 0.3:
-                if final_peaks:
-                    rr_intervals.append(trimmed_time[true_idx] - trimmed_time[final_peaks[-1]])
-                final_peaks.append(true_idx)
-                peak_times.append(trimmed_time[true_idx])
+            final_peaks.append(true_idx)
+            peak_times.append(trimmed_time[true_idx])
+
+            for i in range(1, len(t_peaks)):
+                rr = trimmed_time[t_peaks[i]] - trimmed_time[final_peaks[-1]]
+                if 0.3 < rr < 1.5:
+                    pk_idx = t_peaks[i]
+                    s, e = max(pk_idx - window, 0), min(pk_idx + window, len(trimmed_voltage))
+                    true_idx = s + np.argmax(trimmed_voltage[s:e])
+                    final_peaks.append(true_idx)
+                    peak_times.append(trimmed_time[true_idx])
+                    rr_intervals.append(rr)
 
         hrv = calculate_hrv_metrics(rr_intervals)
 
+        # Plot ECG
         buf = io.BytesIO()
         plt.figure(figsize=(12, 5))
         plt.plot(trimmed_time, trimmed_voltage, color='blue')
@@ -450,7 +447,6 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     except Exception as e:
         print("TRACEBACK:\n", traceback.format_exc())
         raise HTTPException(status_code=400, detail=f"Analyze failed: {str(e)}")
-
 
 
 

@@ -337,12 +337,10 @@ def calculate_hrv_metrics(rr_intervals):
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
     try:
-        # Read all lines and process manually to handle multiple header rows
         raw = await file.read()
         text = raw.decode("utf-8").replace(",", ".")
         lines = text.splitlines()
 
-        # Remove lines like 'sec;mV' and blank lines
         cleaned_lines = [line for line in lines if not any(x in line.lower() for x in ["sec", "mv"]) and line.strip()]
         if not cleaned_lines or not cleaned_lines[0].lower().startswith("time"):
             raise HTTPException(status_code=400, detail="CSV missing valid headers.")
@@ -350,78 +348,71 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         df = pd.read_csv(io.StringIO("\n".join(cleaned_lines)), delimiter=";", skip_blank_lines=True)
         df.columns = [c.strip().lower() for c in df.columns]
 
-        # Normalize headers
-        if "time (s)" in df.columns and "voltage (mv)" in df.columns:
-            df.rename(columns={"time (s)": "time", "voltage (mv)": "voltage"}, inplace=True)
-        elif "time" in df.columns and "voltage" in df.columns:
+        if "time" in df.columns and "voltage" in df.columns:
             pass
         else:
             raise HTTPException(status_code=400, detail=f"CSV missing required columns. Found: {df.columns.tolist()}")
 
-        # Drop any non-numeric rows
         df = df[pd.to_numeric(df["time"], errors="coerce").notnull()]
         df = df[pd.to_numeric(df["voltage"], errors="coerce").notnull()]
         df = df.astype(float)
 
-        # Proceed with your existing logic...
         time = df["time"].values
-        voltage = df["voltage"].values * 1000  # Convert to µV
+        voltage = df["voltage"].values
         fs = round(1 / np.mean(np.diff(time)))
-        filtered = butter_bandpass_filter(voltage, fs=fs)
-        filtered = np.clip(filtered, -600, 600)
 
-        threshold = np.mean(filtered) + 1.8 * np.std(filtered)
+        from scipy.signal import savgol_filter
+
+        voltage_uv = voltage * 1000
+        filtered = butter_bandpass_filter(voltage_uv, fs=fs)
+        smoothed = savgol_filter(filtered, window_length=19, polyorder=2)
+        smoothed = np.clip(smoothed, -600, 600)
+        derivative = np.gradient(smoothed)
+        sharpness = derivative ** 2
+
         min_distance = int(0.3 * fs)
-        peaks, _ = find_peaks(filtered, height=threshold, distance=min_distance, prominence=150)
-
-        true_peaks = []
-        if len(peaks):
-            true_peaks.append(peaks[0])
-            for i in range(1, len(peaks)):
-                rr = time[peaks[i]] - time[true_peaks[-1]]
-                if 0.3 < rr < 1.5:
-                    true_peaks.append(peaks[i])
-
-        if start_index >= len(true_peaks):
-            raise ValueError(f"Start index {start_index} is out of range.")
-
-        start_time = time[true_peaks[start_index]]
-        mask = time >= start_time
-        trimmed_time = time[mask] - start_time
-        trimmed_voltage = voltage[mask]
-        trimmed_filtered = filtered[mask]
-
-        t_peaks, _ = find_peaks(trimmed_filtered,
-                                height=np.mean(trimmed_filtered) + 1.8 * np.std(trimmed_filtered),
-                                distance=min_distance, prominence=150)
+        peak_candidates, _ = find_peaks(sharpness, distance=min_distance, prominence=np.std(sharpness))
 
         final_peaks, peak_times, rr_intervals = [], [], []
-        window = int(0.03 * fs)
+        search_window = int(0.03 * fs)
 
-        if len(t_peaks):
-            pk_idx = t_peaks[0]
-            s, e = max(pk_idx - window, 0), min(pk_idx + window, len(trimmed_voltage))
-            true_idx = s + np.argmax(trimmed_voltage[s:e])
+        for idx in peak_candidates:
+            s = max(0, idx - search_window)
+            e = min(len(smoothed), idx + search_window)
+            true_idx = s + np.argmax(smoothed[s:e])
+
+            check_window = int(0.04 * fs)
+            ws = max(0, true_idx - check_window)
+            we = min(len(smoothed), true_idx + check_window)
+            if smoothed[true_idx] < max(smoothed[ws:we]):
+                continue
+
+            if final_peaks and (time[true_idx] - time[final_peaks[-1]]) < 0.3:
+                continue
+
             final_peaks.append(true_idx)
-            peak_times.append(trimmed_time[true_idx])
+            peak_times.append(time[true_idx])
+            if len(peak_times) > 1:
+                rr_intervals.append(peak_times[-1] - peak_times[-2])
 
-            for i in range(1, len(t_peaks)):
-                rr = trimmed_time[t_peaks[i]] - trimmed_time[final_peaks[-1]]
-                if 0.3 < rr < 1.5:
-                    pk_idx = t_peaks[i]
-                    s, e = max(pk_idx - window, 0), min(pk_idx + window, len(trimmed_voltage))
-                    true_idx = s + np.argmax(trimmed_voltage[s:e])
-                    final_peaks.append(true_idx)
-                    peak_times.append(trimmed_time[true_idx])
-                    rr_intervals.append(rr)
+        if start_index >= len(final_peaks):
+            raise ValueError(f"Start index {start_index} is out of range. Found {len(final_peaks)} peaks.")
+
+        start_time = time[final_peaks[start_index]]
+        mask = time >= start_time
+        trimmed_time = time[mask] - start_time
+        trimmed_voltage = voltage_uv[mask]
+
+        trimmed_peak_indices = [i for i in final_peaks if time[i] >= start_time]
+        trimmed_peak_indices = [i - np.where(mask)[0][0] for i in trimmed_peak_indices]
 
         hrv = calculate_hrv_metrics(rr_intervals)
 
-        # Plot ECG
+        # Plot
         buf = io.BytesIO()
         plt.figure(figsize=(12, 5))
         plt.plot(trimmed_time, trimmed_voltage, color='blue')
-        plt.scatter([trimmed_time[p] for p in final_peaks], [trimmed_voltage[p] for p in final_peaks], color='red')
+        plt.scatter([trimmed_time[i] for i in trimmed_peak_indices], [trimmed_voltage[i] for i in trimmed_peak_indices], color='red')
         plt.tight_layout()
         plt.savefig(buf, format="png")
         plt.close()
@@ -441,14 +432,12 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
             "trimmedTime": trimmed_time.tolist(),
             "trimmedVoltage": trimmed_voltage.tolist(),
             "rawVoltage": trimmed_voltage.tolist(),
-            "truePeaks": [int(i) for i in final_peaks]
+            "truePeaks": trimmed_peak_indices
         }
 
     except Exception as e:
         print("TRACEBACK:\n", traceback.format_exc())
         raise HTTPException(status_code=400, detail=f"Analyze failed: {str(e)}")
-
-
 
 
 

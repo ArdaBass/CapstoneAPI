@@ -379,13 +379,16 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
         for idx in peak_candidates:
             s = max(0, idx - search_window)
             e = min(len(smoothed), idx + search_window)
-            true_idx = s + np.argmax(smoothed[s:e])
+            true_idx_smoothed = s + np.argmax(smoothed[s:e])
+            true_idx_voltage = s + np.argmax(voltage_uv[s:e])
+            true_idx = true_idx_voltage if voltage_uv[true_idx_voltage] >= voltage_uv[true_idx_smoothed] else true_idx_smoothed
 
             check_window = int(0.04 * fs)
             ws = max(0, true_idx - check_window)
-            we = min(len(smoothed), true_idx + check_window)
-            if smoothed[true_idx] < max(smoothed[ws:we]):
+            we = min(len(voltage_uv), true_idx + check_window)
+            if voltage_uv[true_idx] < max(voltage_uv[ws:we]):
                 continue
+
 
             if final_peaks and (time[true_idx] - time[final_peaks[-1]]) < 0.3:
                 continue

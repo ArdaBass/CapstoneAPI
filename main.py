@@ -432,7 +432,7 @@ async def analyze(file: UploadFile = File(...), start_index: int = Form(0)):
             "trimmedTime": trimmed_time.tolist(),
             "trimmedVoltage": trimmed_voltage.tolist(),
             "rawVoltage": trimmed_voltage.tolist(),
-            "truePeaks": trimmed_peak_indices
+            "truePeaks": [int(i) for i in trimmed_peak_indices]
         }
 
     except Exception as e:

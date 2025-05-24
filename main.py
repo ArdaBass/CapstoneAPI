@@ -17,6 +17,8 @@ from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 from pydantic import BaseModel
 import traceback
+from azure.core.exceptions import ResourceNotFoundError
+
 
 
 
@@ -667,7 +669,6 @@ async def merge_files(data: MergeRequest):
             raise HTTPException(status_code=404, detail="Folder not found")
         folder_name = normalize_folder_name(folder_row[0]).lower()
 
-
         merged_df = None
         last_time = 0.0
         last_voltage = 0.0
@@ -683,12 +684,23 @@ async def merge_files(data: MergeRequest):
 
             try:
                 content = blob_client.download_blob().readall()
-                decoded_text = content.decode("utf-8").replace(",", ".")
-                df = pd.read_csv(io.StringIO(decoded_text), delimiter=";", skiprows=1)
+            except ResourceNotFoundError:
+                raise HTTPException(status_code=404, detail=f"Blob not found: {blob_path}")
+
+            decoded_text = content.decode("utf-8").replace(",", ".")
+            lines = decoded_text.splitlines()
+
+            if not lines or not lines[0].strip().lower().startswith("time"):
+                raise HTTPException(status_code=400, detail=f"Invalid or missing CSV header in {blob_path}")
+
+            try:
+                df = pd.read_csv(io.StringIO("\n".join(lines[1:])), delimiter=";")
                 df.columns = ["Time", "Voltage"]
+                df = df[pd.to_numeric(df["Time"], errors="coerce").notnull()]
+                df = df[pd.to_numeric(df["Voltage"], errors="coerce").notnull()]
                 df = df.astype(float)
             except Exception as err:
-                raise HTTPException(status_code=500, detail=f"Error reading or parsing {blob_path}: {err}")
+                raise HTTPException(status_code=400, detail=f"Error parsing CSV in {blob_path}: {err}")
 
             if df.empty:
                 continue
@@ -700,14 +712,13 @@ async def merge_files(data: MergeRequest):
             if merged_df is None:
                 merged_df = df
             else:
-                # Align both time and voltage to previous file's end
+                # Align time and voltage
                 time_shift = last_time - df["Time"].iloc[0]
                 voltage_shift = last_voltage - df["Voltage"].iloc[0]
                 df["Time"] += time_shift
                 df["Voltage"] += voltage_shift
                 merged_df = pd.concat([merged_df, df], ignore_index=True)
 
-            # Update last time and voltage for next file alignment
             last_time = merged_df["Time"].iloc[-1] + (sampling_interval if sampling_interval else 0.001)
             last_voltage = merged_df["Voltage"].iloc[-1]
 
@@ -743,4 +754,5 @@ async def merge_files(data: MergeRequest):
     except HTTPException as he:
         raise he
     except Exception as e:
+        print("TRACEBACK:\n", traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Unexpected server error: {e}")
